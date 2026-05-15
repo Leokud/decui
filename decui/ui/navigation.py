@@ -1,17 +1,23 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable, Union
+from typing import Callable, Union
 
 from PySide6.QtWidgets import QTreeWidget, QTreeWidgetItem, QWidget
 
-if TYPE_CHECKING:
-    pass
-
-_ItemTarget = Union[type, object]  # Entity class or Report class
+_ItemTarget = Union[type, object]
 
 
 class NavigationPanel(QTreeWidget):
-    """Tree-based navigation for catalogs, documents, and reports."""
+    """Tree navigation with 1C-style subsystem hierarchy.
+
+    Entities and reports can specify ``__subsystem__`` as a path string:
+        __subsystem__ = "Расписание"              → section root
+        __subsystem__ = "Расписание/Кружки"       → nested section
+
+    Items without ``__subsystem__`` appear under a default root.
+    """
+
+    SEP = "/"
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -30,29 +36,45 @@ class NavigationPanel(QTreeWidget):
 
         self.clear()
         self._item_map.clear()
+        self._branch_cache: dict[str, QTreeWidgetItem] = {}
 
-        # Organise entities by section
-        section_map: dict[str, list] = {"": []}
+        def _branch(path: str) -> QTreeWidgetItem:
+            """Get or create a tree branch for a subsystem path."""
+            if path in self._branch_cache:
+                return self._branch_cache[path]
+            parts = path.split(self.SEP)
+            parent: QTreeWidgetItem = self
+            for i, p in enumerate(parts):
+                sub = self.SEP.join(parts[: i + 1])
+                if sub not in self._branch_cache:
+                    node = QTreeWidgetItem(parent, [p])
+                    node.setExpanded(True)
+                    self._branch_cache[sub] = node
+                parent = self._branch_cache[sub]
+            return self._branch_cache[path]
+
         for cls in get_all_entities():
-            sec = cls._meta.section or ""
-            section_map.setdefault(sec, []).append(cls)
-
-        for sec, classes in section_map.items():
-            if sec:
-                root = QTreeWidgetItem(self, [sec])
+            sub = getattr(cls, "__subsystem__", None) or cls._meta.section or ""
+            if sub:
+                parent = _branch(sub)
             else:
-                root = self
-            root.setExpanded(True) if sec else None
-            for cls in classes:
-                self._add_item(cls._meta.verbose_name, cls, root)
+                parent = self
+            self._add_item(cls._meta.verbose_name, cls, parent)
 
-        # ── Reports ──
-        reports_root = QTreeWidgetItem(self, ["Отчёты"])
-        reports_root.setExpanded(True)
         for cls in get_all_reports():
-            meta = getattr(cls, "_report_meta", None)
-            name = meta.title if meta else cls.__name__
-            self._add_item(name, cls, reports_root)
+            sub = getattr(cls, "__subsystem__", None) or ""
+            if sub:
+                parent = _branch(sub)
+            else:
+                meta = getattr(cls, "_report_meta", None)
+                root_label = "Отчёты"
+                if root_label not in self._branch_cache:
+                    root = QTreeWidgetItem(self, [root_label])
+                    root.setExpanded(True)
+                    self._branch_cache[root_label] = root
+                parent = self._branch_cache[root_label]
+            name = getattr(cls, "_report_meta", None).title if hasattr(cls, "_report_meta") and cls._report_meta else cls.__name__
+            self._add_item(name, cls, parent)
 
     def _add_item(
         self,

@@ -18,8 +18,10 @@ class TablePart:
         self,
         name: str,
         fields: dict[str, Field],
+        verbose_name: str | None = None,
     ) -> None:
         self.name = name
+        self.verbose_name = verbose_name or name
         self.fields = fields
         self.orm_model: type | None = None
         self.table_name: str = ""
@@ -45,16 +47,19 @@ def tab_part(cls: type) -> TablePart:
                 amount = Decimal("Сумма", read_only=True)
     """
     fields: dict[str, Field] = {}
+    verbose_name: str | None = None
     for key, value in cls.__dict__.items():
         if isinstance(value, Field):
             value.name = key
             fields[key] = value
+        elif key == "__verbose_name__":
+            verbose_name = value
     for base in cls.__bases__:
         base_fields = getattr(base, _TAB_MARKER, None)
         if base_fields is not None:
             for k, v in base_fields.items():
                 fields.setdefault(k, v)
-    return TablePart(cls.__name__, fields)
+    return TablePart(cls.__name__, fields, verbose_name)
 
 
 # ── Entity metadata ────────────────────────────────────────────────
@@ -216,7 +221,9 @@ import datetime as _dt
 
 class Document(Entity):
     _entity_type: str = "document"
-    date = DateTimeField("Дата", default=_dt.datetime.now, required=True)
+    date = DateTimeField("Дата",
+        default=lambda: _dt.datetime.now().replace(second=0, microsecond=0),
+        required=True)
     number = StringField("Номер", default="")
     posted = BooleanField("Проведён", default=False, read_only=True)
 
@@ -229,15 +236,25 @@ class Document(Entity):
 
     def write_movements(self, db: Database) -> None:
         from .movement import write_movements
-        mv = self.get_movements()
-        if mv:
-            write_movements(db, mv)
+        mv_list = self._attach_doc_info(self.get_movements())
+        if mv_list:
+            write_movements(db, mv_list)
 
     def clear_movements(self, db: Database) -> None:
         from .movement import clear_movements
+        seen = set()
         for mv in self.get_movements():
-            clear_movements(db, mv.register,
-                            {"period": mv.period} if mv.period else None)
+            key = id(mv.register)
+            if key not in seen:
+                seen.add(key)
+                clear_movements(db, mv.register, self._id,
+                                type(self).__name__)
+
+    def _attach_doc_info(self, movements: list) -> list:
+        for mv in movements:
+            mv.doc_id = self._id
+            mv.doc_type = type(self).__name__
+        return movements
 
     # ── Проверка последовательности ──
 

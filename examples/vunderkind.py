@@ -142,10 +142,10 @@ class TeacherSchedule(Report):
     def execute(self, db, teacher, date_from, date_to, **kw):
         rows = []
         for cs_summary in db.list(ClubStart):
-            if cs_summary.teacher != teacher:
+            if teacher is not None and cs_summary.teacher != teacher:
                 continue
             cs = db.get(ClubStart, cs_summary._id)
-            if cs is None:
+            if cs is None or not cs.posted:
                 continue
             # Показываем если период работы кружка пересекается с фильтром
             if cs.period_from and date_to and cs.period_from > date_to:

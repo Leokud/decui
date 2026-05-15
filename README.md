@@ -111,7 +111,9 @@ class Product(Catalog):
 | [docs/06-numbering.md](decui/docs/06-numbering.md) | Автонумерация (1C-формат) |
 | [docs/07-building.md](decui/docs/07-building.md) | Сборка .exe, авто-миграция |
 | [docs/08-api.md](decui/docs/08-api.md) | Полный справочник API |
-| [docs/09-advanced.md](decui/docs/09-advanced.md) | Регистры, диаграммы, роли |
+| [docs/09-registers.md](decui/docs/09-registers.md) | Регистры накопления и сведений |
+| [docs/10-reports.md](decui/docs/10-reports.md) | Отчёты: параметры, агрегация, формат, диаграммы |
+| [docs/09-advanced.md](decui/docs/09-advanced.md) | Роли, миграция, последовательность |
 
 ## Для AI-ассистентов
 

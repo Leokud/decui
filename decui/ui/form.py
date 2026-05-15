@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from decui.fields import DecimalField, IntegerField, RefField
+from decui.fields import DecimalField, Field, IntegerField, RefField
 
 from .editors import (
     create_editor,
@@ -296,6 +296,9 @@ class AutoForm(QScrollArea):
         if not found:
             self._entity._data["posted"] = True
         self._save_entity_as_is()
+        if hasattr(self._entity, "get_movements") and self._entity.get_movements():
+            self._entity.clear_movements(self._db)
+            self._entity.write_movements(self._db)
 
     def _doc_post_and_close(self) -> None:
         self._run_post()
@@ -329,6 +332,10 @@ class AutoForm(QScrollArea):
         try:
             cmd.execute(self._entity)
             self._db.save(self._entity)
+            # Write register movements after save (entity has _id)
+            if hasattr(self._entity, "get_movements") and self._entity.get_movements():
+                self._entity.clear_movements(self._db)
+                self._entity.write_movements(self._db)
             self._populate_widgets()
         except Exception as exc:
             QMessageBox.critical(self, "Ошибка", f"{cmd.name}: {exc}")
@@ -351,7 +358,7 @@ class _TablePartWidget(QGroupBox):
         database: Database | None = None,
         parent: QWidget | None = None,
     ) -> None:
-        super().__init__(table_part.name, parent)
+        super().__init__(table_part.verbose_name, parent)
         self._tp = table_part
         self._db = database
         self._rows_data: list[dict[str, Any]] = []

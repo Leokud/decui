@@ -183,9 +183,9 @@ def set_editor_value(widget: Any, field: Field, value: Any) -> None:
     elif isinstance(field, DateTimeField):
         w = cast(QDateTimeEdit, widget)
         if isinstance(value, datetime.datetime):
-            w.setDateTime(value)
+            w.setDateTime(value.replace(second=0, microsecond=0))
         else:
-            w.setDateTime(datetime.datetime.now())
+            w.setDateTime(datetime.datetime.now().replace(second=0, microsecond=0))
 
     elif isinstance(field, TimeField):
         w = cast(QTimeEdit, widget)

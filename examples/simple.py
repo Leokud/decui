@@ -112,12 +112,8 @@ class Invoice(Document):
     __verbose_name__ = "Счета"
     __defaults__ = {
         "Items": lambda db: [
-            {
-                "product": db.list(Product)[0]._id if db.list(Product) else None,
-                "quantity": 1,
-                "price": db.list(Product)[0].price if db.list(Product) else 0,
-                "amount": 0,
-            },
+            {"product": p._id, "quantity": 1, "price": p.price, "amount": 0}
+            for p in db.list(Product)[:1]
         ],
     }
 
@@ -216,7 +212,7 @@ class SalesReport(Report):
         rows = []
         for inv_summary in db.list(Invoice):
             inv = db.get(Invoice, inv_summary._id)
-            if inv is None:
+            if inv is None or not inv.posted:
                 continue
 
             # Фильтр по дате

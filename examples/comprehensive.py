@@ -171,7 +171,7 @@ class SalesReport(Report):
         # Load each invoice fully (with table parts)
         for inv_summary in db.list(Invoice):
             inv = db.get(Invoice, inv_summary._id)
-            if inv is None:
+            if inv is None or not inv.posted:
                 continue
             if inv.date:
                 if date_from and inv.date < date_from:

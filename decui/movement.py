@@ -129,6 +129,8 @@ class Movement:
 
     Ресурсы указываются положительными числами.
     Флаг is_income определяет знак: приход (+), расход (-).
+    doc_id и doc_type позволяют идентифицировать документ-владелец,
+    чтобы при перепроведении удалить только его движения.
     """
 
     register: type[Register]
@@ -136,6 +138,8 @@ class Movement:
     dimensions: dict[str, Any] = field(default_factory=dict)
     resources: dict[str, Any] = field(default_factory=dict)
     is_income: bool = True
+    doc_id: int | None = None
+    doc_type: str | None = None
 
 
 # ── Регистрация ────────────────────────────────────────────────────
@@ -209,6 +213,8 @@ def create_register_models(engine: Any, base: Any) -> None:
                 attrs[name] = Column(Integer, nullable=not dim.required)
             else:
                 attrs[name] = Column(String(255), nullable=not dim.required)
+        attrs["doc_type"] = Column(String(50), nullable=True)
+        attrs["doc_id"] = Column(Integer, nullable=True)
         for name, res in meta.resources.items():
             if res.field_type == Decimal:
                 attrs[name] = Column(Numeric(15, 2), nullable=not res.required)
@@ -246,6 +252,10 @@ def write_movements(db: Database, movements: list[Movement]) -> None:
             row = model_class()
             if meta.register_type == "accumulation" and mv.period:
                 row.period = mv.period
+            if mv.doc_type:
+                row.doc_type = mv.doc_type
+            if mv.doc_id is not None:
+                row.doc_id = mv.doc_id
             for k, v in mv.dimensions.items():
                 setattr(row, k, v)
             sign = 1 if mv.is_income else -1
@@ -257,8 +267,9 @@ def write_movements(db: Database, movements: list[Movement]) -> None:
 
 
 def clear_movements(db: Database, register_cls: type[Register],
-                    dimension_filters: dict[str, Any] | None = None) -> None:
-    """Очистить движения регистра по фильтру измерений."""
+                    doc_id: int | None = None,
+                    doc_type: str | None = None) -> None:
+    """Очистить движения регистра по документу."""
     from sqlalchemy.orm import sessionmaker
     Session = sessionmaker(bind=db._engine)
     meta = register_cls._register_meta
@@ -267,9 +278,10 @@ def clear_movements(db: Database, register_cls: type[Register],
         return
     with Session() as session:
         q = session.query(model_class)
-        if dimension_filters:
-            for k, v in dimension_filters.items():
-                q = q.filter(getattr(model_class, k) == v)
+        if doc_id is not None:
+            q = q.filter(model_class.doc_id == doc_id)
+        if doc_type:
+            q = q.filter(model_class.doc_type == doc_type)
         q.delete()
         session.commit()
 
