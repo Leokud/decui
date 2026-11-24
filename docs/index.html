@@ -798,7 +798,7 @@ if __name__ == "__main__":
           <ol style="margin-top: 8px;">
             <li>Создал файл SQLite <code>warehouse.db</code> и таблицу <code>product</code>.</li>
             <li>Собрал главное окно с навигацией слева («Склад → Товары»).</li>
-            <li>Сгенерировал таблицу списка товаров с кнопками «Новый», «Изменить», «Удалить», «Обновить».</li>
+            <li>Сгенерировал таблицу списка товаров с кнопками «Новый», «Изменить», «Копировать», «Удалить», «Обновить».</li>
             <li>Сгенерировал диалог ввода с проверкой обязательного наименования и числовым спиннером цены.</li>
           </ol>
         </div>
@@ -828,9 +828,9 @@ if __name__ == "__main__":
           <tbody>
             <tr>
               <td><code>String("Имя")</code></td>
-              <td>QLineEdit</td>
-              <td>VARCHAR</td>
-              <td><code>required</code>, <code>max_length</code>, <code>read_only</code></td>
+              <td>QLineEdit / QPlainTextEdit</td>
+              <td>VARCHAR / TEXT</td>
+              <td><code>required</code>, <code>max_length</code>, <code>read_only</code>, <code>multiline=True</code></td>
             </tr>
             <tr>
               <td><code>Integer("Кол-во")</code></td>
@@ -1101,6 +1101,16 @@ class SalesReport(QueryReport):
         </div>
 
         <div class="callout tip">
+          <div class="callout-title">🎨 Цветовая и визуальная индикация строк</div>
+          Каждая строка отчёта может содержать специальные ключи форматирования:
+          <ul style="margin-top: 6px;">
+            <li><code>"_style": "completed"</code> или <code>"_strikeout": True</code> — зачёркнутый серый шрифт (для выполненных задач или завершённых этапов).</li>
+            <li><code>"_style": "current"</code> или <code>"_bold": True</code> — полужирный шрифт (для текущего активного этапа).</li>
+            <li><code>"_color": "#2563eb"</code> — произвольный цвет текста ячеек.</li>
+          </ul>
+        </div>
+
+        <div class="callout tip">
           <div class="callout-title">📊 Встроенный виджет диаграмм: BarChart</div>
           Вы можете выводить горизонтальные и вертикальные столбчатые графики с помощью виджета <code>decui.ui.chart.BarChart</code>:
           <pre><code class="language-python">from decui.ui.chart import BarChart
@@ -1225,7 +1235,35 @@ data = order.to_dict()
 restored_order = SalesOrder.from_dict(data)</code></pre>
         </div>
 
-        <h2>5. Хелперы для быстрого тестирования</h2>
+        <h2>5. Многострочный текст (multiline=True)</h2>
+        <p>Для заметок, комментариев и длинных описаний достаточно указать <code>multiline=True</code>:</p>
+        <div class="code-container">
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+          <pre><code class="language-python">class Task(MasterData):
+    name = String(required=True)
+    # Создаст QPlainTextEdit в форме и Text-колонку в SQLite:
+    description = String(multiline=True)
+    deadline = DateTime(required=True)</code></pre>
+        </div>
+
+        <h2>6. Сервис напоминаний о дедлайнах (ReminderService)</h2>
+        <p>DECUI включает готовый фоновый сервис уведомлений с диалогом переноса сроков:</p>
+        <div class="code-container">
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+          <pre><code class="language-python"># Включение напоминаний в приложении (проверка приближающихся дедлайнов)
+app.enable_reminders(
+    [Task],
+    date_field="deadline",
+    done_field="is_completed",
+    notify_before_minutes=60, # за 60 минут до срока
+)
+
+# Показ поздравительного окна при успешном достижении цели:
+from decui import celebrate_goal_completed
+celebrate_goal_completed(message="Цель достигнута. Отличная работа!")</code></pre>
+        </div>
+
+        <h2>7. Хелперы для быстрого тестирования</h2>
         <div class="code-container">
           <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
           <pre><code class="language-python"># Быстрая БД в оперативной памяти

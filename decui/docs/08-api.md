@@ -33,6 +33,9 @@ from decui import (
     # Отчёты и параметры
     report, Report, QueryReport, Column,
     StringParam, IntegerParam, NumberParam, DecimalParam, BooleanParam, DateParam, RefParam,
+
+    # Напоминания и уведомления
+    ReminderService, ReminderDialog, celebrate_goal_completed,
 )
 ```
 
@@ -46,6 +49,10 @@ app = ERPApplication(
     db_path="erp.db",             # Путь к SQLite (или ":memory:")
     argv=None                     # Аргументы командной строки sys.argv
 )
+
+# Подключение сервиса напоминаний о дедлайнах
+app.enable_reminders([Task], date_field="deadline", notify_before_minutes=60)
+
 app.run()                         # Запуск цикла событий Qt
 ```
 
