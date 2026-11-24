@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime
 from abc import ABC, abstractmethod
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, Self, overload
 
 if TYPE_CHECKING:
     from .entity import Entity
@@ -53,6 +53,23 @@ class Field(Generic[T], ABC):
         self.name = name
         if not self.display_name:
             self.display_name = name.replace("_", " ").capitalize()
+
+    @overload
+    def __get__(self, instance: None, owner: Any) -> Self: ...
+
+    @overload
+    def __get__(self, instance: object, owner: Any = None) -> T: ...
+
+    def __get__(self, instance: object | None, owner: Any = None) -> Any:
+        if instance is None:
+            return self
+        if hasattr(instance, "_data"):
+            return getattr(instance, "_data").get(getattr(self, "name", ""))
+        return None
+
+    def __set__(self, instance: object, value: Any) -> None:
+        if hasattr(instance, "_data"):
+            getattr(instance, "_data")[getattr(self, "name", "")] = self.to_python(value)
 
     @abstractmethod
     def to_python(self, value: Any) -> T | None:

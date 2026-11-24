@@ -968,6 +968,18 @@ if __name__ == "__main__":
           </tbody>
         </table>
 
+        <div class="callout tip">
+          <div class="callout-title">💡 Поддержка подсказок в IDE (Type Hints & PEP 681 @dataclass_transform)</div>
+          <p>DECUI полностью поддерживает автодополнение и проверку типов в современных IDE (VS Code, PyCharm, Cursor):</p>
+          <ul style="margin-top: 8px; margin-left: 20px;">
+            <li><b>Аннотации типов:</b> вы можете писать <code>name: str = String("Имя")</code> или минималистично <code>name: str</code>, <code>age: int = 18</code>. Фреймворк автоматически распознает тип и создаст нужный дескриптор.</li>
+            <li><b>Автодополнение в конструкторе:</b> благодаря стандарту <code>@dataclass_transform</code> при создании <code>Product(...)</code> IDE подсказывает все доступные параметры.</li>
+            <li><b>Встроенные поля документов:</b> любой <code>Document</code> уже имеет типизированные поля <code>date</code>, <code>number</code>, <code>posted</code> и <code>id</code>.</li>
+            <li><b>Служебные атрибуты:</b> при вводе <code>__</code> внутри класса IDE подсказывает <code>__verbose_name__</code>, <code>__section__</code>, <code>__numbering__</code>, <code>__defaults__</code>.</li>
+            <li><b>Интроспекция в коде:</b> в любой момент можно узнать поля класса через <code>Product.field_names()</code> или <code>Product.fields()</code>.</li>
+          </ul>
+        </div>
+
         <h2>Практический пример: Категории и Товары с автонумерацией</h2>
         <div class="code-container">
           <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
@@ -1675,6 +1687,33 @@ app.database      # Экземпляр Database для прямых запрос
             </tr>
           </tbody>
         </table>
+
+        <h3>Поддержка подсказок и автодополнения в IDE:</h3>
+        <div class="code-container">
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+          <pre><code class="language-python"># Вариант 1: Type hints + дескриптор (максимальная информативность)
+class Student(MasterData):
+    name: str = String("Имя", required=True)
+    age: int = Integer("Возраст", default=18)
+    deadline: datetime.datetime = DateTime("Дедлайн")
+
+# Вариант 2: Чистые type hints (минималистичный стиль)
+class Student(MasterData):
+    name: str
+    age: int = 18
+    is_active: bool = True
+
+# Вариант 3: Классический стиль фреймворка
+class Student(MasterData):
+    name = String("Имя", required=True)
+    age = Integer("Возраст", default=18)
+
+# Программная интроспекция полей:
+Student.field_names()  # -> ['name', 'age', 'is_active']
+Student.fields()       # -> dict с дескрипторами полей
+Student.name           # -> возвращает дескриптор поля StringField
+</code></pre>
+        </div>
 
         <!-- SUBSECTION 5: LINE ITEMS -->
         <h2>5. Табличные части и спецификации (`@line_items` / `@tab_part`)</h2>

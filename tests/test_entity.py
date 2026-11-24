@@ -112,3 +112,68 @@ def test_transaction_alias():
     assert wb.note == "Delivery"
     wb.submit()
     assert wb.is_posted
+
+
+def test_ide_typing_and_annotations():
+    @master_data
+    class Student(MasterData):
+        __verbose_name__ = "Студенты"
+        __section__ = "Учёба"
+
+        name: str
+        age: int = 18
+        gpa: Decimal = Decimal("4.00")
+        is_active: bool = True
+        birth_date: datetime.date
+
+    # 1. Introspection methods on class
+    fields = Student.fields()
+    assert "name" in fields
+    assert "age" in fields
+    assert "gpa" in fields
+    assert "is_active" in fields
+    assert "birth_date" in fields
+
+    assert Student.field_names() == ["name", "age", "gpa", "is_active", "birth_date"]
+
+    # 2. Accessing field on class returns descriptor
+    assert hasattr(Student, "name")
+    assert Student.name == fields["name"]
+    assert Student.age == fields["age"]
+
+    # 3. ClassVar metadata
+    assert Student.__verbose_name__ == "Студенты"
+    assert Student.__section__ == "Учёба"
+
+    # 4. Instantiation with kwargs
+    s = Student(name="Иван", age=20, gpa=Decimal("4.75"), is_active=True, birth_date=datetime.date(2004, 5, 10))
+    assert s.name == "Иван"
+    assert s.age == 20
+    assert s.gpa == Decimal("4.75")
+    assert s.is_active is True
+    assert s.birth_date == datetime.date(2004, 5, 10)
+
+    # 5. Setting attribute via descriptor/entity
+    s.name = "Пётр"
+    s.age = 21
+    assert s.name == "Пётр"
+    assert s.age == 21
+    assert s._data["name"] == "Пётр"
+    assert s._data["age"] == 21
+
+    # 6. Document built-in fields and types
+    @document
+    class Goal(Document):
+        title: str
+
+    assert "date" in Goal.fields()
+    assert "number" in Goal.fields()
+    assert "posted" in Goal.fields()
+    assert "title" in Goal.fields()
+
+    g = Goal(title="Пройти отбор")
+    assert g.title == "Пройти отбор"
+    assert isinstance(g.date, datetime.datetime)
+    assert g.number == ""
+    assert g.posted is False
+    assert g.id is None

@@ -134,3 +134,37 @@ __verbose_name__ = "Товары"   # вместо Product в дереве на�
 ```
 
 Если не указан — используется имя класса (Product, Invoice и т.д.).
+
+---
+
+## Поддержка IDE и Type Hints (PEP 681)
+
+DECUI поддерживает современные возможности статического анализа в IDE (VS Code, PyCharm, Cursor):
+
+### 1. Объявление полей с аннотациями типов:
+```python
+@master_data
+class Student(MasterData):
+    # Способ 1: Type hint + дескриптор (полный контроль и подсказки)
+    name: str = String("Имя", required=True)
+    age: int = Integer("Возраст", default=18)
+    deadline: datetime.datetime = DateTime("Дедлайн")
+
+    # Способ 2: Чистые type hints (минималистичный стиль как в dataclasses)
+    is_active: bool = True
+    score: int = 100
+```
+
+### 2. Подсказки метаданных класса:
+При вводе `__` внутри класса IDE подсказывает все поддерживаемые атрибуты:
+- `__verbose_name__: str`
+- `__section__: str`
+- `__numbering__: dict`
+- `__defaults__: dict`
+- `__primary_key__: str`
+
+### 3. Интроспекция полей:
+- `Student.field_names()` — список имен всех полей (`['name', 'age', ...]`)
+- `Student.fields()` — словарь дескрипторов
+- `Student.name` — дескриптор поля на уровне класса
+- В конструкторе `Student(name=..., age=...)` IDE автоматически подсказывает сигнатуру благодаря `@dataclass_transform`!

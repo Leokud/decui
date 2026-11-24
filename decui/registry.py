@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, dataclass_transform
 
 from .entity import Entity, EntityMeta
+from .fields import Field
 
 _entity_registry: dict[str, type[Entity]] = {}
 _report_registry: dict[str, type] = {}
@@ -56,6 +57,10 @@ def clear() -> None:
 
 # ── Decorators ─────────────────────────────────────────────────────
 
+@dataclass_transform(
+    kw_only_default=True,
+    field_specifiers=(Field,),
+)
 def catalog(cls: type) -> type:
     """Register a master data / catalog entity (subclass of ``Catalog`` / ``MasterData``)."""
     if not isinstance(cls, EntityMeta):
@@ -70,6 +75,10 @@ lookup = catalog
 master_data = catalog
 
 
+@dataclass_transform(
+    kw_only_default=True,
+    field_specifiers=(Field,),
+)
 def document(cls: type) -> type:
     """Register a transaction / document entity (subclass of ``Document`` / ``Transaction``)."""
     if not isinstance(cls, EntityMeta):

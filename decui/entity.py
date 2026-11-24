@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, TypeVar, dataclass_transform
 
 from .commands import get_command_meta, Command
 from .fields import BooleanField, DateTimeField, Field, StringField
@@ -157,6 +157,55 @@ class Metadata:
         return self.entity_type == "document"
 
 
+def _infer_field_from_annotation(name: str, ann_type: Any, default_val: Any = None) -> Field | None:
+    """Infer a Field descriptor from Python type annotations (e.g. name: str, age: int = 18)."""
+    from types import UnionType
+    from typing import Union
+    import datetime as _dt
+    from decimal import Decimal
+    from .fields import (
+        BooleanField,
+        DateField,
+        DateTimeField,
+        DecimalField,
+        IntegerField,
+        RefField,
+        StringField,
+        TimeField,
+    )
+
+    required = True
+    origin = getattr(ann_type, "__origin__", None)
+    args = getattr(ann_type, "__args__", ())
+    if origin is UnionType or origin is Union:
+        non_none_args = [a for a in args if a is not type(None)]
+        if len(non_none_args) == 1:
+            ann_type = non_none_args[0]
+            required = False
+
+    if ann_type is str or ann_type == "str":
+        return StringField(required=required and default_val is None, default=default_val)
+    if ann_type is int or ann_type == "int":
+        return IntegerField(required=required and default_val is None, default=default_val if default_val is not None else 0)
+    if ann_type is float or ann_type is Decimal or ann_type in ("float", "Decimal"):
+        return DecimalField(required=required and default_val is None, default=default_val if default_val is not None else Decimal("0.00"))
+    if ann_type is bool or ann_type == "bool":
+        return BooleanField(default=default_val if default_val is not None else False)
+    if ann_type is _dt.date or ann_type in ("datetime.date", "date"):
+        return DateField(required=required and default_val is None, default=default_val or _dt.date.today)
+    if ann_type is _dt.datetime or ann_type in ("datetime.datetime", "datetime"):
+        return DateTimeField(required=required and default_val is None, default=default_val or _dt.datetime.now)
+    if ann_type is _dt.time or ann_type in ("datetime.time", "time"):
+        return TimeField(required=required and default_val is None, default=default_val or _dt.time(9, 0))
+    if isinstance(ann_type, type) and issubclass(ann_type, Entity):
+        return RefField(ann_type, required=required and default_val is None)
+    return None
+
+
+@dataclass_transform(
+    kw_only_default=True,
+    field_specifiers=(Field,),
+)
 class EntityMeta(type):
     """Metaclass that processes entity class bodies."""
 
@@ -197,6 +246,30 @@ class EntityMeta(type):
                     table_parts.setdefault(k, v)
 
         cls = super().__new__(mcs, name, bases, namespace)
+
+        # Process type annotations for fields defined with type hints (e.g. name: str, age: int = 18)
+        import inspect
+        try:
+            annotations = inspect.get_annotations(cls)
+        except Exception:
+            annotations = getattr(cls, "__annotations__", {}) or {}
+
+        for key, ann_type in annotations.items():
+            if key.startswith("_") or key in fields or key in table_parts or key in commands:
+                continue
+            default_val = getattr(cls, key, None)
+            if isinstance(default_val, (classmethod, staticmethod, property)) or callable(default_val):
+                continue
+            field_obj = _infer_field_from_annotation(key, ann_type, default_val)
+            if field_obj is not None:
+                field_obj.name = key
+                if not field_obj.display_name:
+                    field_obj.display_name = key.replace("_", " ").capitalize()
+                fields[key] = field_obj
+                try:
+                    delattr(cls, key)
+                except (AttributeError, TypeError):
+                    pass
         entity_type = getattr(cls, "_entity_type", "entity")
         verbose_name: str | None = namespace.pop("__verbose_name__", None)
         if verbose_name is None:
@@ -214,11 +287,54 @@ class EntityMeta(type):
         cls._meta = Metadata(name, fields, commands, table_parts, entity_type, verbose_name, defaults, section)
         return cls
 
+    def __getattr__(cls, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        meta = cls.__dict__.get("_meta")
+        if meta:
+            if name in meta.fields:
+                return meta.fields[name]
+            if name in meta.table_parts:
+                return meta.table_parts[name]
+        raise AttributeError(f"type object '{cls.__name__}' has no attribute '{name}'")
 
+
+@dataclass_transform(
+    kw_only_default=True,
+    field_specifiers=(Field,),
+)
 class Entity(metaclass=EntityMeta):
     """Base class for all entities."""
 
     _meta: ClassVar[Metadata]
+
+    # Class-level type hints for IDE autocompletion:
+    id: int | None = None
+    _id: int | None = None
+    _data: dict[str, Any]
+    _table_data: dict[str, Any]
+
+    __verbose_name__: ClassVar[str | None] = None
+    __section__: ClassVar[str | None] = None
+    __subsystem__: ClassVar[str | None] = None
+    __numbering__: ClassVar[dict[str, Any] | None] = None
+    __defaults__: ClassVar[dict[str, Any] | None] = None
+    __primary_key__: ClassVar[str] = "id"
+
+    @classmethod
+    def fields(cls) -> dict[str, Field]:
+        """Return a mapping of field names to Field descriptors for this entity."""
+        return dict(cls._meta.fields)
+
+    @classmethod
+    def field_names(cls) -> list[str]:
+        """Return the list of field names defined on this entity."""
+        return list(cls._meta.fields.keys())
+
+    @classmethod
+    def table_parts_meta(cls) -> dict[str, TablePart]:
+        """Return a mapping of table part names to TablePart descriptors."""
+        return dict(cls._meta.table_parts)
 
     def __init__(self, **kwargs: Any) -> None:
         object.__setattr__(self, "_data", {})
