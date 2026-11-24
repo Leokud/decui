@@ -557,6 +557,88 @@
         display: block;
       }
     }
+
+    /* Sidebar search */
+    .sidebar-search {
+      padding: 0 0 16px 0;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 16px;
+    }
+
+    .sidebar-search input {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px;
+      color: var(--text-bright);
+      font-size: 0.85rem;
+      font-family: inherit;
+      outline: none;
+      transition: all 0.2s ease;
+    }
+
+    .sidebar-search input:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 2px var(--primary-bg);
+    }
+
+    .search-results-box {
+      margin-top: 8px;
+      max-height: 240px;
+      overflow-y: auto;
+      border-radius: 6px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      display: none;
+    }
+
+    .search-result-item {
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      font-size: 0.8rem;
+      transition: background 0.15s;
+    }
+
+    .search-result-item:hover {
+      background: var(--bg-card-hover);
+      color: var(--primary);
+    }
+
+    .search-result-title {
+      font-weight: 600;
+      color: var(--text-bright);
+    }
+
+    .search-result-snippet {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .api-badge {
+      display: inline-block;
+      padding: 2px 6px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      border-radius: 4px;
+      background: var(--primary-bg);
+      color: var(--primary);
+      margin-right: 6px;
+    }
+
+    .api-badge.orange {
+      background: var(--accent-amber-bg);
+      color: var(--accent-amber);
+    }
+
+    .api-badge.green {
+      background: var(--accent-green-bg);
+      color: var(--accent-green);
+    }
   </style>
 </head>
 <body>
@@ -592,6 +674,11 @@
         <div class="progress-bar">
           <div class="progress-fill" id="progress-fill"></div>
         </div>
+      </div>
+
+      <div class="sidebar-search">
+        <input type="text" id="doc-search" placeholder="🔍 Поиск по API и руководству..." oninput="filterDocs(this.value)" autocomplete="off" />
+        <div class="search-results-box" id="search-results"></div>
       </div>
 
       <nav class="nav-list">
@@ -630,6 +717,10 @@
         <a class="nav-item" onclick="goToStep(8)">
           <div class="nav-step-badge">8</div>
           <span>CLI и эргономика (DX)</span>
+        </a>
+        <a class="nav-item" onclick="goToStep(9)">
+          <div class="nav-step-badge">9</div>
+          <span>Полный справочник API</span>
         </a>
       </nav>
 
@@ -735,7 +826,7 @@
 
       <!-- STEP 1 -->
       <section class="step-section" id="step-1">
-        <div class="step-tag">Шаг 1 из 7</div>
+        <div class="step-tag">Шаг 1 из 8</div>
         <h1>Быстрый старт за 10 строк</h1>
         <p>Начнем с минимального рабочего приложения. Создадим учет справочника товаров с формой ввода, списком и локальной базой данных.</p>
 
@@ -811,7 +902,7 @@ if __name__ == "__main__":
 
       <!-- STEP 2 -->
       <section class="step-section" id="step-2">
-        <div class="step-tag">Шаг 2 из 7</div>
+        <div class="step-tag">Шаг 2 из 8</div>
         <h1>Справочники (Master Data) и типы полей</h1>
         <p>Расширим модель: добавим автонумерацию с префиксами, связь между справочниками (Foreign Key) и автозаполнение.</p>
 
@@ -916,7 +1007,7 @@ class Product(MasterData):
 
       <!-- STEP 3 -->
       <section class="step-section" id="step-3">
-        <div class="step-tag">Шаг 3 из 7</div>
+        <div class="step-tag">Шаг 3 из 8</div>
         <h1>Документы и спецификации строк (@line_items)</h1>
         <p>Документ отражает факт хозяйственной операции (счет, приходная накладная, чек продажи). В отличие от справочника, он имеет дату, статус проведения и табличную часть со строками.</p>
 
@@ -1015,7 +1106,7 @@ class TaskOrder(Transaction):
 
       <!-- STEP 4 -->
       <section class="step-section" id="step-4">
-        <div class="step-tag">Шаг 4 из 7</div>
+        <div class="step-tag">Шаг 4 из 8</div>
         <h1>Складской учёт и регистры остатков (@ledger)</h1>
         <p>Сердце любой системы учета — <b>Регистры остатков (Ledgers)</b>. Они работают по принципу Event Sourcing: документы формируют записи изменений (приход <code>+</code>, расход <code>-</code>), а регистр мгновенно отдает актуальный баланс.</p>
 
@@ -1077,7 +1168,7 @@ for s in stocks:
 
       <!-- STEP 5 -->
       <section class="step-section" id="step-5">
-        <div class="step-tag">Шаг 5 из 7</div>
+        <div class="step-tag">Шаг 5 из 8</div>
         <h1>Периодические значения (@history_register)</h1>
         <p>Часто требуется хранить величины, меняющиеся во времени: курсы валют на дату, историю цен поставщиков, тарифы сотрудников.</p>
 
@@ -1113,7 +1204,7 @@ history = get_records(db, CurrencyRate, currency="USD", order_by="id", desc=True
 
       <!-- STEP 6 -->
       <section class="step-section" id="step-6">
-        <div class="step-tag">Шаг 6 из 7</div>
+        <div class="step-tag">Шаг 6 из 8</div>
         <h1>Аналитические отчёты и диаграммы (@report)</h1>
         <p>DECUI строит параметрические отчеты: вы объявляете колонки таблицы, параметры формы фильтрации и метод выборки данных.</p>
 
@@ -1183,7 +1274,7 @@ layout.addWidget(chart)</code></pre>
 
       <!-- STEP 7 -->
       <section class="step-section" id="step-7">
-        <div class="step-tag">Шаг 7 из 7</div>
+        <div class="step-tag">Шаг 7 из 8</div>
         <h1>Сборка в автономный .exe для распространения</h1>
         <p>Вашим пользователям не нужен установленный Python или терминал. PyInstaller упакует всё приложение в единый исполняемый файл.</p>
 
@@ -1216,7 +1307,8 @@ layout.addWidget(chart)</code></pre>
 
       <!-- Step 8: CLI & DX -->
       <section class="step-section" id="step-8">
-        <h1>Шаг 8: CLI-утилита и современный Developer Experience (DX)</h1>
+        <div class="step-tag">Шаг 8 из 8</div>
+        <h1>CLI-утилита и современный Developer Experience (DX)</h1>
         <p class="lead">Как писать меньше шаблонного кода, ускорить разработку и легко тестировать приложения.</p>
 
         <h2>1. Консольная утилита decui</h2>
@@ -1335,6 +1427,495 @@ products = db.seed([
 
         <div class="step-footer">
           <button class="btn btn-secondary" onclick="goToStep(7)">⬅ Назад</button>
+          <button class="btn btn-primary" onclick="markCompletedAndNext(8)">Далее: Справочник API ➔</button>
+        </div>
+      </section>
+
+      <!-- STEP 9: FULL API REFERENCE -->
+      <section class="step-section" id="step-9">
+        <div class="step-tag">Справочник API & Референс</div>
+        <h1>Полный справочник API фреймворка DECUI</h1>
+        <p>Исчерпывающее руководство по всем классам, методам, декораторам, дескрипторам полей и сервисным функциям. Вся необходимая информация собрана на этой странице — нет необходимости обращаться к исходным .md файлам.</p>
+
+        <!-- SUBSECTION 1: EXPORTS -->
+        <h2>1. Быстрый импорт и структура пакета (All Exports)</h2>
+        <p>DECUI поддерживает как современный универсальный ERP-синтаксис, так и традиционные алиасы 1С (для 100% обратной совместимости):</p>
+        <div class="code-container">
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+          <pre><code class="language-python"># Стандартный универсальный стиль (рекомендуется):
+from decui import (
+    # Ядро приложения и БД
+    ERPApplication, Database,
+    
+    # Сущности и декораторы
+    master_data, transaction, line_items, action,
+    MasterData, Transaction,
+    
+    # Регистры
+    ledger, history_register,
+    Ledger, HistoryRegister, LedgerEntry, Dimension, RefDimension, Metric, Resource,
+    get_ledger_balance, get_records, get_latest, set_record,
+    
+    # Дескрипторы полей
+    String, Integer, Decimal as D, Boolean, Date, DateTime, Time, Choice, Ref,
+    
+    # Отчёты
+    report, Report, QueryReport, Column,
+    DateParam, StringParam, IntegerParam, DecimalParam, BooleanParam, RefParam, ChoiceParam,
+    
+    # Сервис напоминаний и уведомлений
+    ReminderService, ReminderDialog, celebrate_goal_completed,
+)
+
+# Стиль 1С (полная обратная совместимость):
+from decui import (
+    catalog, document, tab_part, command, accumulation, information,
+    Catalog, Document, TablePart, Movement, get_balance,
+)</code></pre>
+        </div>
+
+        <!-- SUBSECTION 2: ERPAPPLICATION & DATABASE -->
+        <h2>2. Приложение и База Данных (`ERPApplication`, `Database`)</h2>
+        <div class="code-container">
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+          <pre><code class="language-python"># Запуск настольного приложения:
+app = ERPApplication(
+    title="Учетная система",      # Заголовок главного окна
+    db_path="app.db",             # Файл SQLite (или ":memory:")
+    argv=None,                    # Аргументы командной строки sys.argv
+)
+
+# Подключение фонового сервиса напоминаний о дедлайнах:
+app.enable_reminders([Task], date_field="deadline", done_field="is_completed", notify_before_minutes=60)
+
+# Запуск цикла событий Qt:
+app.run()
+
+# Доступные свойства экземпляра:
+app.main_window   # Главное окно QMainWindow с навигацией и вкладками
+app.database      # Экземпляр Database для прямых запросов</code></pre>
+        </div>
+
+        <h3>Методы класса `Database`</h3>
+        <table class="table-custom">
+          <thead>
+            <tr>
+              <th>Метод</th>
+              <th>Сигнатура</th>
+              <th>Описание</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>Database(path)</code></td>
+              <td><code>Database(db_path: str = "erp.db")</code></td>
+              <td>Инициализация базы данных SQLite. Автоматически выполняет хэш-миграцию схемы.</td>
+            </tr>
+            <tr>
+              <td><code>Database.memory()</code></td>
+              <td><code>classmethod Database.memory()</code></td>
+              <td>Создает чистую БД в оперативной памяти (для быстрых тестов без создания файлов).</td>
+            </tr>
+            <tr>
+              <td><code>db.save(entity)</code></td>
+              <td><code>db.save(entity: Entity) -> Entity</code></td>
+              <td>Сохраняет сущность (INSERT если id is None, иначе UPDATE) вместе со всеми строками спецификаций.</td>
+            </tr>
+            <tr>
+              <td><code>db.get(Class, id)</code></td>
+              <td><code>db.get(entity_cls, id: int) -> Optional[Entity]</code></td>
+              <td>Загружает сущность по первичному ключу <b>вместе со всеми строками табличных частей</b>.</td>
+            </tr>
+            <tr>
+              <td><code>db.list(Class)</code></td>
+              <td><code>db.list(entity_cls) -> list[Entity]</code></td>
+              <td>Возвращает список всех записей (быстрая выборка без загрузки строк спецификаций).</td>
+            </tr>
+            <tr>
+              <td><code>db.filter(Class, **kwargs)</code></td>
+              <td><code>db.filter(entity_cls, **kwargs) -> list[Entity]</code></td>
+              <td>Выборка записей по точным значениям полей (например: <code>status="В работе"</code>).</td>
+            </tr>
+            <tr>
+              <td><code>db.delete(entity)</code></td>
+              <td><code>db.delete(entity: Entity)</code></td>
+              <td>Каскадно удаляет запись и все связанные с ней строки спецификаций.</td>
+            </tr>
+            <tr>
+              <td><code>db.seed(entities)</code></td>
+              <td><code>db.seed(entities: list[Entity]) -> list[Entity]</code></td>
+              <td>Пакетное сохранение списка объектов (удобно для заполнения начальных данных).</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <!-- SUBSECTION 3: METADATA ATTRIBUTES -->
+        <h2>3. Метаданные классов сущностей (`__*__`)</h2>
+        <p>Поведение сущностей настраивается декларативными атрибутами класса:</p>
+        <table class="table-custom">
+          <thead>
+            <tr>
+              <th>Атрибут</th>
+              <th>Тип</th>
+              <th>Назначение и пример</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>__section__</code> (или <code>__subsystem__</code>)</td>
+              <td><code>str</code></td>
+              <td>Раздел дерева навигации в левой панели: <code>__section__ = "Склад/Остатки"</code> (поддерживает слеши для подразделов).</td>
+            </tr>
+            <tr>
+              <td><code>__verbose_name__</code></td>
+              <td><code>str</code></td>
+              <td>Человекочитаемое имя во множественном числе для списков и меню: <code>__verbose_name__ = "Заказы клиентов"</code>.</td>
+            </tr>
+            <tr>
+              <td><code>__numbering__</code></td>
+              <td><code>dict</code></td>
+              <td>
+                Шаблон сквозной нумерации:<br>
+                <code>{"prefix": "INV", "field": "number", "pattern": "{prefix}-{year}-{seq:06d}"}</code><br>
+                Переменные: <code>{prefix}</code>, <code>{year}</code> (4 цифры), <code>{month}</code> (2 цифры), <code>{seq:0Nd}</code> (порядковый номер с N нулями). Счётчик автоматически сбрасывается для нового года/месяца!
+              </td>
+            </tr>
+            <tr>
+              <td><code>__defaults__</code></td>
+              <td><code>dict</code></td>
+              <td>
+                Значения по умолчанию для формы создания новой записи:<br>
+                <code>{"status": "Черновик", "created_date": lambda db: datetime.date.today()}</code>
+              </td>
+            </tr>
+            <tr>
+              <td><code>__primary_key__</code></td>
+              <td><code>str</code></td>
+              <td>Имя первичного ключа (по умолчанию <code>"id"</code>, INTEGER PRIMARY KEY AUTOINCREMENT).</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <!-- SUBSECTION 4: FIELDS -->
+        <h2>4. Дескрипторы всех полей (`Field`)</h2>
+        <p>Все поля поддерживают автоматический вывод названий: если аргумент <code>display_name</code> опущен, он формируется из имени переменной (<code>unit_price</code> → <code>"Unit price"</code>).</p>
+        <table class="table-custom">
+          <thead>
+            <tr>
+              <th>Дескриптор</th>
+              <th>Виджет UI</th>
+              <th>SQLite колонка</th>
+              <th>Параметры</th>
+              <th>Пример</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>String</code></td>
+              <td>QLineEdit / QPlainTextEdit</td>
+              <td>VARCHAR / TEXT</td>
+              <td><code>required=False</code>, <code>max_length=None</code>, <code>read_only=False</code>, <code>default=None</code>, <code>multiline=False</code></td>
+              <td><code>desc = String("Описание", multiline=True)</code></td>
+            </tr>
+            <tr>
+              <td><code>Integer</code></td>
+              <td>QSpinBox</td>
+              <td>INTEGER</td>
+              <td><code>required=False</code>, <code>min_value=None</code>, <code>max_value=None</code>, <code>default=0</code></td>
+              <td><code>qty = Integer("Кол-во", min_value=1, default=1)</code></td>
+            </tr>
+            <tr>
+              <td><code>Decimal</code> (алиас <code>D</code>)</td>
+              <td>QDoubleSpinBox</td>
+              <td>NUMERIC(p, s)</td>
+              <td><code>precision=10</code>, <code>scale=2</code>, <code>min_value=None</code>, <code>max_value=None</code>, <code>currency=None</code></td>
+              <td><code>price = D("Цена", precision=12, scale=2, min_value=0)</code></td>
+            </tr>
+            <tr>
+              <td><code>Boolean</code></td>
+              <td>QCheckBox</td>
+              <td>BOOLEAN</td>
+              <td><code>default=False</code></td>
+              <td><code>is_done = Boolean("Выполнено", default=False)</code></td>
+            </tr>
+            <tr>
+              <td><code>Date</code></td>
+              <td>QDateEdit (календарь)</td>
+              <td>DATE</td>
+              <td><code>required=False</code>, <code>default=datetime.date.today</code></td>
+              <td><code>due = Date("Срок оплаты", default=datetime.date.today)</code></td>
+            </tr>
+            <tr>
+              <td><code>DateTime</code></td>
+              <td>QDateTimeEdit (календарь + ЧЧ:ММ)</td>
+              <td>DATETIME</td>
+              <td><code>required=False</code>, <code>default=datetime.datetime.now</code></td>
+              <td><code>deadline = DateTime("Дедлайн", required=True)</code></td>
+            </tr>
+            <tr>
+              <td><code>Time</code></td>
+              <td>QTimeEdit (ЧЧ:ММ)</td>
+              <td>VARCHAR(5)</td>
+              <td><code>required=False</code>, <code>default=datetime.time(9, 0)</code></td>
+              <td><code>start_time = Time("Время начала")</code></td>
+            </tr>
+            <tr>
+              <td><code>Choice</code></td>
+              <td>Группа QCheckBox</td>
+              <td>VARCHAR</td>
+              <td><code>choices=[("VAL", "Label")]</code>, <code>separator="|"</code></td>
+              <td><code>days = Choice("Дни", choices=[("MON", "Пн"), ("TUE", "Вт")])</code></td>
+            </tr>
+            <tr>
+              <td><code>Ref</code></td>
+              <td>QComboBox (со списком)</td>
+              <td>INTEGER FK</td>
+              <td><code>target: type</code>, <code>representation_field="name"</code>, <code>auto_fill=dict</code>, <code>required=False</code></td>
+              <td><code>client = Ref(Customer, "Клиент", auto_fill={"price": "standard_price"})</code></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <!-- SUBSECTION 5: LINE ITEMS -->
+        <h2>5. Табличные части и спецификации (`@line_items` / `@tab_part`)</h2>
+        <p>Табличные части объявляются как внутренние классы с декоратором <code>@line_items</code>:</p>
+        <div class="code-container">
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+          <pre><code class="language-python">@transaction
+class Invoice(Transaction):
+    customer = Ref(Customer, "Клиент", required=True)
+    total    = D("Итого", read_only=True)
+
+    @line_items
+    class Items:
+        product  = Ref(Product, "Товар", required=True)
+        quantity = Integer("Количество", default=1, min_value=1)
+        price    = D("Цена", precision=10, scale=2)
+        amount   = D("Сумма", precision=10, scale=2, read_only=True)
+
+    # Работа со строками через коллекцию self.Items (LineItemsCollection):
+    @action("Пересчитать")
+    def recalc(self):
+        # 1. Обход строк
+        for row in self.Items:
+            row["amount"] = Decimal(str(row.get("quantity") or 0)) * Decimal(str(row.get("price") or 0))
+            
+        # 2. Быстрый подсчет итога по любой колонке
+        self.total = self.Items.total("amount")
+
+    def add_standard_item(self, product_obj, qty=1):
+        # 3. Программное добавление новой строки в спецификацию:
+        self.Items.add(product=product_obj._id, quantity=qty, price=product_obj.price, amount=qty * product_obj.price)</code></pre>
+        </div>
+
+        <div class="callout tip">
+          <div class="callout-title">Авторасчет и управление строками в UI</div>
+          <ul>
+            <li>Если колонки названы <code>price</code>, <code>quantity</code> и <code>amount</code>, встроенный интерфейс автоматически рассчитывает произведение прямо в ячейке при вводе!</li>
+            <li>Интерфейс таблицы снабжен кнопками «Добавить строку», «Удалить строку», «Вверх» и «Вниз».</li>
+          </ul>
+        </div>
+
+        <!-- SUBSECTION 6: ACTIONS & VALIDATION -->
+        <h2>6. Действия на форме, бизнес-логика и валидация (`@action`)</h2>
+        <div class="code-container">
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+          <pre><code class="language-python">import datetime
+from decui import action
+
+@transaction
+class ProjectTask(Transaction):
+    title        = String(required=True)
+    deadline     = DateTime(default=datetime.datetime.now)
+    is_completed = Boolean(default=False)
+
+    @action("Завершить задачу")
+    def complete(self):
+        # Валидация правил: выброс ValueError отменяет сохранение и показывает диалог пользователю
+        if self.is_completed:
+            raise ValueError("Задача уже завершена!")
+            
+        self.is_completed = True
+        self.post() # Проведение документа
+
+    @action("Продлить на неделю")
+    def extend(self):
+        # Стандартная арифметика дат Python (datetime + timedelta)
+        current = self.deadline or datetime.datetime.now()
+        self.deadline = current + datetime.timedelta(days=7)</code></pre>
+        </div>
+
+        <!-- SUBSECTION 7: REGISTERS -->
+        <h2>7. Регистры остатков (`@ledger`) и сведений (`@history_register`)</h2>
+        <div class="code-container">
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+          <pre><code class="language-python"># 1. Балансовый регистр (Event Sourcing)
+@ledger
+class WarehouseStock(Ledger):
+    warehouse = Dimension("Склад")    # Разрез аналитики
+    product   = Dimension("Товар")    # Разрез аналитики
+    quantity  = Metric("Остаток")     # Суммируемый ресурс
+
+# В транзакции:
+def get_ledger_entries(self):
+    return [
+        LedgerEntry(
+            register=WarehouseStock,
+            dimensions={"warehouse": self.warehouse, "product": row["product"]},
+            resources={"quantity": row["quantity"]},
+            is_income=True, # True = приход (+), False = расход (-)
+        )
+        for row in self.Items
+    ]
+
+# Запрос мгновенного баланса:
+balances = get_ledger_balance(db, WarehouseStock, warehouse=1, group_by=["product"])
+
+# 2. Регистр сведений (периодические параметры)
+@history_register
+class PriceHistory(HistoryRegister):
+    product = Dimension("Товар")
+    price   = Resource("Цена")
+
+# Запись и чтение среза последних:
+set_record(db, PriceHistory, dimensions={"product": 1}, resources={"price": 1500.00})
+latest = get_latest(db, PriceHistory, product=1) # -> {"price": 1500.00}</code></pre>
+        </div>
+
+        <!-- SUBSECTION 8: REPORTS -->
+        <h2>8. Параметрические отчёты (`@report` / `QueryReport`)</h2>
+        <table class="table-custom">
+          <thead>
+            <tr>
+              <th>Параметр `Column`</th>
+              <th>Тип</th>
+              <th>Описание</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>label</code></td>
+              <td><code>str</code></td>
+              <td>Текст в заголовке колонки таблицы.</td>
+            </tr>
+            <tr>
+              <td><code>key</code></td>
+              <td><code>str</code></td>
+              <td>Имя ключа в словарях строк, возвращаемых методом <code>execute()</code>.</td>
+            </tr>
+            <tr>
+              <td><code>width</code></td>
+              <td><code>int</code></td>
+              <td>Ширина колонки в пикселях (по умолчанию 120).</td>
+            </tr>
+            <tr>
+              <td><code>align</code></td>
+              <td><code>"left" | "right" | "center"</code></td>
+              <td>Выравнивание текста в ячейках (для чисел рекомендуется <code>"right"</code>).</td>
+            </tr>
+            <tr>
+              <td><code>aggregate</code></td>
+              <td><code>"sum" | "avg" | "min" | "max" | "count"</code></td>
+              <td>Функция подсчета итогов в подвале таблицы отчета.</td>
+            </tr>
+            <tr>
+              <td><code>format</code></td>
+              <td><code>str</code></td>
+              <td>Форматная строка Python (например: <code>"{:,.2f}"</code>).</td>
+            </tr>
+            <tr>
+              <td><code>suffix</code> / <code>prefix</code></td>
+              <td><code>str</code></td>
+              <td>Префикс или суффикс (например: <code>suffix=" руб."</code>).</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>Параметры формы отчета:</h3>
+        <p><code>DateParam</code>, <code>StringParam</code>, <code>IntegerParam</code>, <code>DecimalParam</code>, <code>BooleanParam</code>, <code>RefParam(Target)</code>, <code>ChoiceParam(choices=[...])</code>.</p>
+
+        <h3>Стилизация строк в отчетах (`_style`):</h3>
+        <div class="code-container">
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+          <pre><code class="language-python">def execute(self, db, **params):
+    return [
+        {"task": "Завершить релиз", "status": "Готово", "_style": "completed"}, # зачёркнутый серый
+        {"task": "Провести встречу", "status": "В работе", "_style": "current"}, # жирный шрифт
+        {"task": "Срочный баг", "status": "Критично", "_color": "#d32f2f", "_bold": True}, # красный цвет
+    ]</code></pre>
+        </div>
+
+        <!-- SUBSECTION 9: ACTIVE RECORD & PERSISTENCE -->
+        <h2>9. Методы Active Record и сериализация</h2>
+        <div class="code-container">
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+          <pre><code class="language-python"># Сохранение и удаление прямо на экземпляре:
+item = Product(name="Монитор", price=Decimal("15000.00"))
+item.save(db)
+item.delete(db)
+
+# Класс-методы выборки:
+item = Product.get(db, 1)            # по ID
+all_items = Product.all(db)          # все записи
+active = Product.filter(db, is_active=True) # фильтрация
+
+# Сериализация:
+data = item.to_dict()                # dict со всеми полями и строками
+copy = Product.from_dict(data)       # восстановление объекта</code></pre>
+        </div>
+
+        <!-- SUBSECTION 10: REMINDERS & DIALOGS -->
+        <h2>10. Сервис напоминаний и диалоги (`ReminderService`)</h2>
+        <div class="code-container">
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+          <pre><code class="language-python">from decui import ReminderService, celebrate_goal_completed
+
+# Включение в приложении:
+app.enable_reminders(
+    [GoalTask, ProjectTask],
+    date_field="deadline",
+    done_field="is_completed",
+    notify_before_minutes=60, # уведомление за 1 час до срока
+)
+
+# Показ поздравительного окна при завершении цели/задачи:
+celebrate_goal_completed(message="Поздравляем! Цель успешно достигнута!")</code></pre>
+        </div>
+
+        <!-- SUBSECTION 11: CLI & BUILD -->
+        <h2>11. Сборка в один файл (.exe) и консольный CLI</h2>
+        <div class="code-container">
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+          <pre><code class="language-bash"># Создание нового проекта из шаблона:
+decui new my_project
+
+# Запуск приложения:
+decui run main.py
+
+# Компиляция в полностью автономный EXE (без Python у клиента):
+python build_exe.py
+# Результат сохраняется в dist/ERP.exe (Windows) или dist/ERP (Linux)</code></pre>
+        </div>
+
+        <!-- SUBSECTION 12: PITFALLS & FAQ -->
+        <h2>12. Частые вопросы и архитектурные тонкости (FAQ)</h2>
+        <div class="callout info">
+          <div class="callout-title">1. Загрузка спецификаций: почему <code>db.list()</code> не возвращает строки?</div>
+          В целях высокой производительности метод <code>db.list(Class)</code> загружает только заголовки (шапки) документов для отображения в таблице. Чтобы загрузить документ со всеми строками спецификаций, используйте <code>db.get(Class, id)</code> или <code>Class.get(db, id)</code>.
+        </div>
+
+        <div class="callout tip">
+          <div class="callout-title">2. Как работает клонирование («Копировать») в списках?</div>
+          Кнопка «Копировать» в ListView автоматически клонирует выбранную запись вместе со всеми строками спецификаций, но <b>сбрасывает id и уникальный номер</b> (<code>number</code> / <code>code</code>), чтобы новая запись получила новый уникальный номер из счётчика автонумерации.
+        </div>
+
+        <div class="callout tip">
+          <div class="callout-title">3. Как обновляется схема базы данных при добавлении новых полей?</div>
+          DECUI вычисляет криптографический хэш структуры всех моделей. При изменении полей или таблиц фреймворк выполняет автоматическую чистую миграцию, поэтому вам никогда не придётся писать ручные SQL-скрипты миграций.
+        </div>
+
+        <div class="step-footer">
+          <button class="btn btn-secondary" onclick="goToStep(8)">⬅ Назад</button>
           <button class="btn btn-success" onclick="markCompletedAndFinish()">🎉 Обучение завершено!</button>
         </div>
       </section>
@@ -1349,7 +1930,7 @@ products = db.seed([
 
   <script>
     let currentStep = 0;
-    const totalSteps = 9;
+    const totalSteps = 10;
     const completedSteps = new Set(JSON.parse(localStorage.getItem('decui_completed_steps') || '[]'));
 
     function updateProgress() {
@@ -1392,9 +1973,49 @@ products = db.seed([
     }
 
     function markCompletedAndFinish() {
-      completedSteps.add(8);
+      completedSteps.add(9);
       updateProgress();
-      alert('🎉 Поздравляем! Вы полностью изучили основы DECUI и готовы строить современные учетные системы на Python!');
+      alert('🎉 Поздравляем! Вы полностью изучили DECUI и готовы строить современные настольные учетные системы на Python!');
+    }
+
+    function filterDocs(query) {
+      const q = query.trim().toLowerCase();
+      const resultsBox = document.getElementById('search-results');
+      if (!q) {
+        resultsBox.style.display = 'none';
+        resultsBox.innerHTML = '';
+        return;
+      }
+      
+      const results = [];
+      document.querySelectorAll('.step-section').forEach((sec, stepIdx) => {
+        const stepTitle = sec.querySelector('h1')?.innerText || `Раздел ${stepIdx}`;
+        sec.querySelectorAll('h2, h3, p, code').forEach(el => {
+          const text = el.innerText.trim();
+          if (text.toLowerCase().includes(q) && results.length < 10) {
+            if (!results.some(r => r.stepIdx === stepIdx && r.snippet === text)) {
+              results.push({
+                stepIdx,
+                stepTitle,
+                snippet: text.length > 70 ? text.substring(0, 70) + '...' : text
+              });
+            }
+          }
+        });
+      });
+
+      if (results.length > 0) {
+        resultsBox.style.display = 'block';
+        resultsBox.innerHTML = results.map(r => `
+          <div class="search-result-item" onclick="goToStep(${r.stepIdx}); document.getElementById('search-results').style.display='none'; document.getElementById('doc-search').value='';">
+            <div class="search-result-title">${r.stepTitle}</div>
+            <div class="search-result-snippet">${r.snippet}</div>
+          </div>
+        `).join('');
+      } else {
+        resultsBox.style.display = 'block';
+        resultsBox.innerHTML = '<div class="search-result-item" style="cursor:default; color:var(--text-muted);">Ничего не найдено</div>';
+      }
     }
 
     function switchTab(btn, targetId) {
