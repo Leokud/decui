@@ -627,6 +627,10 @@
           <div class="nav-step-badge">7</div>
           <span>Сборка в автономный .exe</span>
         </a>
+        <a class="nav-item" onclick="goToStep(8)">
+          <div class="nav-step-badge">8</div>
+          <span>CLI и эргономика (DX)</span>
+        </a>
       </nav>
 
       <div style="margin-top: auto; padding: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; font-size: 0.8rem; color: var(--text-muted);">
@@ -1139,6 +1143,103 @@ layout.addWidget(chart)</code></pre>
 
         <div class="step-footer">
           <button class="btn btn-secondary" onclick="goToStep(6)">⬅ Назад</button>
+          <button class="btn btn-primary" onclick="markCompletedAndNext(7)">Вперед (Шаг 8) ➡</button>
+        </div>
+      </section>
+
+      <!-- Step 8: CLI & DX -->
+      <section class="step-section" id="step-8">
+        <h1>Шаг 8: CLI-утилита и современный Developer Experience (DX)</h1>
+        <p class="lead">Как писать меньше шаблонного кода, ускорить разработку и легко тестировать приложения.</p>
+
+        <h2>1. Консольная утилита decui</h2>
+        <p>DECUI включает удобный интерфейс командной строки для генерации проектов, запуска и тестирования:</p>
+
+        <div class="code-container">
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+          <pre><code class="language-bash"># Создать готовый проект со справочниками, документами и отчетами
+decui new my_erp
+cd my_erp
+
+# Запустить приложение (автоматически находит app.py)
+decui run
+
+# Запустить тесты (автоматически настраивает offscreen-режим для GUI)
+decui test
+
+# Собрать приложение в автономный бинарник
+decui build</code></pre>
+        </div>
+
+        <h2>2. Авто-вывод названий полей (Auto-naming)</h2>
+        <p>Вам больше не нужно повторять имена в дескрипторах. Первый аргумент <code>display_name</code> теперь опционален:</p>
+
+        <div class="code-container">
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+          <pre><code class="language-python"># Раньше:
+name = String("Наименование", required=True)
+unit_price = Decimal("Unit price", scale=2)
+
+# Теперь — чисто и лаконично:
+name = String(required=True)                  # Авто-подпись: "Name"
+unit_price = Decimal(scale=2, currency="RUB") # Авто-подпись: "Unit price"
+customer = Ref(Customer, required=True)       # Авто-подпись: "Customer"
+is_active = Boolean(default=True)             # Авто-подпись: "Is active"</code></pre>
+        </div>
+
+        <h2>3. Умные спецификации: .add() и .total()</h2>
+        <p>Строки спецификаций (табличные части <code>@line_items</code>) теперь обладают методами для быстрой работы без ручных циклов:</p>
+
+        <div class="code-container">
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+          <pre><code class="language-python">order = SalesOrder()
+
+# Добавление строк с авто-конвертацией типов
+order.Items.add(product=prod_id, quantity=5, price=Decimal("150.00"), amount=Decimal("750.00"))
+
+# Мгновенный расчет итогов
+total_amount = order.Items.total("amount")    # Decimal("750.00")
+total_quantity = order.Items.total("quantity") # 5
+
+# Очистка строк при необходимости
+order.Items.clear()</code></pre>
+        </div>
+
+        <h2>4. Active Record и быстрая работа с базой данных</h2>
+        <p>Вы можете вызывать методы работы с БД прямо на объектах:</p>
+
+        <div class="code-container">
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+          <pre><code class="language-python"># Сохранение и удаление объекта
+product = Product(name="Клавиатура", unit_price=Decimal("3500"))
+product.save(db)
+product.delete(db)
+
+# Поиск и фильтрация
+item = Product.get(db, 1)                     # По первичному ключу ID
+all_items = Product.all(db)                   # Все записи
+cheap_items = Product.filter(db, is_active=True) # По значению полей
+
+# Сериализация в словарь и обратно
+data = order.to_dict()
+restored_order = SalesOrder.from_dict(data)</code></pre>
+        </div>
+
+        <h2>5. Хелперы для быстрого тестирования</h2>
+        <div class="code-container">
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+          <pre><code class="language-python"># Быстрая БД в оперативной памяти
+db = Database.memory()
+
+# Пакетное заполнение тестовыми данными (seed)
+products = db.seed([
+    Product(name="Товар А", unit_price=Decimal("100")),
+    Product(name="Товар Б", unit_price=Decimal("200")),
+])</code></pre>
+        </div>
+
+        <div class="step-footer">
+          <button class="btn btn-secondary" onclick="goToStep(7)">⬅ Назад</button>
           <button class="btn btn-success" onclick="markCompletedAndFinish()">🎉 Обучение завершено!</button>
         </div>
       </section>
@@ -1153,7 +1254,7 @@ layout.addWidget(chart)</code></pre>
 
   <script>
     let currentStep = 0;
-    const totalSteps = 8;
+    const totalSteps = 9;
     const completedSteps = new Set(JSON.parse(localStorage.getItem('decui_completed_steps') || '[]'));
 
     function updateProgress() {
@@ -1196,9 +1297,9 @@ layout.addWidget(chart)</code></pre>
     }
 
     function markCompletedAndFinish() {
-      completedSteps.add(7);
+      completedSteps.add(8);
       updateProgress();
-      alert('🎉 Поздравляем! Вы полностью изучили основы DECUI и готовы строить учетные системы на Python!');
+      alert('🎉 Поздравляем! Вы полностью изучили основы DECUI и готовы строить современные учетные системы на Python!');
     }
 
     function switchTab(btn, targetId) {

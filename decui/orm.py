@@ -83,6 +83,11 @@ class Database:
         except Exception as exc:
             self._last_error = f"Ошибка: {exc}\n{traceback.format_exc()}"
 
+    @classmethod
+    def memory(cls, echo: bool = False) -> Database:
+        """Create an in-memory database."""
+        return cls(":memory:", echo=echo)
+
     # ------------------------------------------------------------------
     # Auto schema upgrade
     # ------------------------------------------------------------------
@@ -315,7 +320,10 @@ class Database:
                     for name in tp.fields:
                         row_dict[name] = getattr(row, name)
                     table_data.append(row_dict)
-                instance._table_data[tp_name] = table_data
+                from .entity import LineItemsCollection
+                instance._table_data[tp_name] = LineItemsCollection(
+                    table_data, parent=instance, tp_meta=tp
+                )
         return instance
 
     def save(self, entity: Entity) -> Entity:
@@ -417,6 +425,27 @@ class Database:
                 return [self._model_to_entity(r, entity_class) for r in rows]
         except SQLAlchemyError as exc:
             raise RuntimeError(f"Ошибка SQL при чтении списка: {exc}") from exc
+
+    def filter(self, entity_class: type, **kwargs: Any) -> list[Entity]:
+        """Return entities matching field filter criteria."""
+        self._check_ready()
+        model_class = entity_class._meta.orm_model
+        if model_class is None:
+            raise RuntimeError(f"Модель для {entity_class.__name__} не создана")
+        try:
+            with self.session() as sess:
+                query = sess.query(model_class)
+                for k, v in kwargs.items():
+                    if hasattr(model_class, k):
+                        query = query.filter(getattr(model_class, k) == v)
+                rows = query.all()
+                return [self._model_to_entity(r, entity_class) for r in rows]
+        except SQLAlchemyError as exc:
+            raise RuntimeError(f"Ошибка SQL при фильтрации: {exc}") from exc
+
+    def seed(self, entities: list[Entity]) -> list[Entity]:
+        """Save a batch list of entities."""
+        return [self.save(e) for e in entities]
 
     def delete(self, entity: Entity) -> None:
         """Delete an entity from the database."""

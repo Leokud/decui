@@ -58,16 +58,36 @@ app.run()                         # Запуск цикла событий Qt
 
 ```python
 db = Database("erp.db")
+# Или база данных в памяти (для тестов):
+db = Database.memory()
 
-db.save(entity)          # INSERT (если id is None) или UPDATE + сохранение строк спецификаций
-db.get(Class, id)        # Получить объект по первичному ключу со всеми строками спецификаций
-db.list(Class)           # Получить список всех объектов (краткая выгрузка без тяжелых строк)
-db.delete(entity)        # Удалить объект и каскадно удалить строки спецификаций
+db.save(entity)              # INSERT (если id is None) или UPDATE + сохранение строк спецификаций
+db.get(Class, id)            # Получить объект по первичному ключу со всеми строками спецификаций
+db.list(Class)               # Получить список всех объектов (краткая выгрузка без тяжелых строк)
+db.filter(Class, **kwargs)   # Выборка объектов по значениям полей
+db.delete(entity)            # Удалить объект и каскадно удалить строки спецификаций
+db.seed([e1, e2, ...])       # Пакетное сохранение списка объектов
 ```
 
 ---
 
 ## 3. Сущности
+
+### Базовый класс `Entity` (Active Record & Helpers)
+Все сущности (`MasterData`, `Transaction`, `Catalog`, `Document`) наследуют методы:
+- `entity.save(db)` — сохранить сущность в базу данных.
+- `entity.delete(db)` — удалить сущность из базы данных.
+- `Class.get(db, id)` — получить сущность по первичному ключу `id`.
+- `Class.all(db)` — получить список всех сущностей данного класса.
+- `Class.filter(db, **kwargs)` — отфильтровать записи по значениям полей.
+- `entity.to_dict(include_table_parts=True)` — сериализовать в `dict`.
+- `Class.from_dict(data)` — восстановить экземпляр из словаря.
+
+### Коллекция строк спецификаций (`LineItemsCollection`)
+Табличные части (`@line_items` / `@tab_part`) предоставляют методы:
+- `doc.Items.add(**kwargs)` — валидирует и добавляет новую строку.
+- `doc.Items.total(field="amount")` — вычисляет сумму указанного поля по всем строкам.
+- Стандартные операции `list`: индексация (`doc.Items[0]`), итерация, `len()`, `doc.Items.clear()`.
 
 ### `@catalog` / `@master_data` / `@lookup`
 
@@ -80,8 +100,8 @@ class Customer(MasterData):
     __section__      = "Продажи"
     __numbering__    = {"prefix": "CTR", "pattern": "{prefix}-{seq:06d}"}
 
-    code = String("Код", read_only=True)
-    name = String("Наименование", required=True)
+    code = String(read_only=True)             # Автоматическое имя: "Code"
+    name = String("Наименование", required=True) # Явное имя
 ```
 
 ### `@document` / `@transaction`
@@ -135,17 +155,19 @@ class Invoice(Transaction):
 
 ## 4. Поля (`Field`)
 
+Все дескрипторы полей поддерживают автоматический вывод названий: первый аргумент `display_name` опционален. При его отсутствии имя генерируется из имени атрибута (`unit_price` → `"Unit price"`).
+
 | Тип | Назначение | Параметры |
 |---|---|---|
-| `String(name)` | Строка (`QLineEdit`) | `required`, `max_length`, `read_only`, `default` |
-| `Integer(name)` | Целое число (`QSpinBox`) | `required`, `min_value`, `max_value`, `default` |
-| `Decimal(name)` | Десятичное число (`QDoubleSpinBox`) | `precision`, `scale`, `min_value`, `max_value`, `currency` |
-| `Boolean(name)` | Флаг (`QCheckBox`) | `default` |
-| `Date(name)` | Дата (`QDateEdit`) | `required`, `default` |
-| `DateTime(name)` | Дата и время (`QDateTimeEdit`) | `required`, `default` |
-| `Time(name)` | Время (`QTimeEdit`) | `required`, `default` |
-| `Choice(name)` | Множественный выбор (`QGroupBox + QCheckBox`) | `choices=[("CODE", "Label")]`, `separator="|"` |
-| `Ref(Target, name)`| Внешний ключ (`QComboBox`) | `representation_field`, `auto_fill`, `required` |
+| `String(name=None)` | Строка (`QLineEdit`) | `required`, `max_length`, `read_only`, `default` |
+| `Integer(name=None)` | Целое число (`QSpinBox`) | `required`, `min_value`, `max_value`, `default` |
+| `Decimal(name=None)` | Десятичное число (`QDoubleSpinBox`) | `precision`, `scale`, `min_value`, `max_value`, `currency` |
+| `Boolean(name=None)` | Флаг (`QCheckBox`) | `default` |
+| `Date(name=None)` | Дата (`QDateEdit`) | `required`, `default` |
+| `DateTime(name=None)` | Дата и время (`QDateTimeEdit`) | `required`, `default` |
+| `Time(name=None)` | Время (`QTimeEdit`) | `required`, `default` |
+| `Choice(name=None)` | Множественный выбор (`QGroupBox + QCheckBox`) | `choices=[("CODE", "Label")]`, `separator="|"` |
+| `Ref(Target, name=None)`| Внешний ключ (`QComboBox`) | `representation_field`, `auto_fill`, `required` |
 
 ---
 

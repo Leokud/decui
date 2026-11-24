@@ -32,7 +32,7 @@ class Field(Generic[T], ABC):
 
     def __init__(
         self,
-        display_name: str,
+        display_name: str | None = None,
         *,
         required: bool = False,
         default: T | None = None,
@@ -41,7 +41,7 @@ class Field(Generic[T], ABC):
         unique: bool = False,
         visible: bool = True,
     ) -> None:
-        self.display_name = display_name
+        self.display_name = display_name or ""
         self.required = required
         self.default = default
         self.read_only = read_only
@@ -51,6 +51,8 @@ class Field(Generic[T], ABC):
 
     def __set_name__(self, owner: type, name: str) -> None:
         self.name = name
+        if not self.display_name:
+            self.display_name = name.replace("_", " ").capitalize()
 
     @abstractmethod
     def to_python(self, value: Any) -> T | None:
@@ -72,7 +74,7 @@ class StringField(Field[str]):
 
     def __init__(
         self,
-        display_name: str,
+        display_name: str | None = None,
         *,
         max_length: int | None = None,
         **kwargs: Any,
@@ -96,7 +98,7 @@ class IntegerField(Field[int]):
 
     def __init__(
         self,
-        display_name: str,
+        display_name: str | None = None,
         *,
         min_value: int | None = None,
         max_value: int | None = None,
@@ -131,7 +133,7 @@ class DecimalField(Field[Decimal]):
 
     def __init__(
         self,
-        display_name: str,
+        display_name: str | None = None,
         *,
         precision: int = 10,
         scale: int = 2,
@@ -224,7 +226,7 @@ class ChoiceField(Field[str]):
 
     def __init__(
         self,
-        display_name: str,
+        display_name: str | None = None,
         *,
         choices: list[tuple[str, str]] | None = None,
         separator: str = "|",
@@ -271,8 +273,6 @@ class RefField(Field[int]):
 
     def __set_name__(self, owner: type, name: str) -> None:
         super().__set_name__(owner, name)
-        if not self.display_name:
-            self.display_name = name.capitalize()
 
     def resolve_target(self) -> type:
         if isinstance(self.target, str):

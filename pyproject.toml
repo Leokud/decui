@@ -12,3 +12,6 @@ dependencies = [
     "pytest>=8.0.0"
 ]
 
+[project.scripts]
+decui = "decui.cli:main"
+

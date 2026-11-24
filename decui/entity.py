@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
 
 from .commands import get_command_meta, Command
 from .fields import BooleanField, DateTimeField, Field, StringField
 
 if TYPE_CHECKING:
     from .orm import Database
+
+TEntity = TypeVar("TEntity", bound="Entity")
 
 
 # ── Table part ─────────────────────────────────────────────────────
@@ -25,6 +27,55 @@ class TablePart:
         self.fields = fields
         self.orm_model: type | None = None
         self.table_name: str = ""
+
+
+class LineItemsCollection(list):
+    """Convenience list wrapper for table parts / child tables.
+
+    Preserves 100% list compatibility (indexing, iteration, append) while adding:
+      - .add(**kwargs): creates, converts, and appends a row dict
+      - .total(field="amount"): computes sum of specified field
+      - .clear(): clears rows
+    """
+
+    def __init__(
+        self,
+        items: list[dict[str, Any]] | None = None,
+        *,
+        parent: Entity | None = None,
+        tp_meta: TablePart | None = None,
+    ) -> None:
+        super().__init__(items or [])
+        self._parent = parent
+        self._tp_meta = tp_meta
+
+    def add(self, **kwargs: Any) -> dict[str, Any]:
+        """Add a new line item row using keyword arguments."""
+        row: dict[str, Any] = {}
+        if self._tp_meta is not None:
+            for fname, field in self._tp_meta.fields.items():
+                default = field.default() if callable(field.default) else field.default
+                val = kwargs.get(fname, default)
+                if val is not None:
+                    try:
+                        val = field.to_python(val)
+                    except Exception:
+                        pass
+                row[fname] = val
+        for k, v in kwargs.items():
+            if k not in row:
+                row[k] = v
+        self.append(row)
+        return row
+
+    def total(self, field: str = "amount") -> Any:
+        """Sum values of a field across all line items."""
+        tot: Any = 0
+        for row in self:
+            val = row.get(field)
+            if val is not None:
+                tot += val
+        return tot
 
 
 _TAB_MARKER = "__erp_tab_part__"
@@ -51,6 +102,8 @@ def tab_part(cls: type) -> TablePart:
     for key, value in cls.__dict__.items():
         if isinstance(value, Field):
             value.name = key
+            if not value.display_name:
+                value.display_name = key.replace("_", " ").capitalize()
             fields[key] = value
         elif key == "__verbose_name__":
             verbose_name = value
@@ -121,6 +174,8 @@ class EntityMeta(type):
         for key, value in list(namespace.items()):
             if isinstance(value, Field):
                 value.name = key
+                if not value.display_name:
+                    value.display_name = key.replace("_", " ").capitalize()
                 fields[key] = value
                 namespace.pop(key)
             elif isinstance(value, TablePart):
@@ -178,8 +233,9 @@ class Entity(metaclass=EntityMeta):
                 except Exception:
                     pass
             self._data[name] = value
-        for tp_name in self._meta.table_parts:
-            self._table_data[tp_name] = list(kwargs.pop(tp_name, []))
+        for tp_name, tp in self._meta.table_parts.items():
+            raw_rows = list(kwargs.pop(tp_name, []))
+            self._table_data[tp_name] = LineItemsCollection(raw_rows, parent=self, tp_meta=tp)
         if kwargs:
             raise TypeError(
                 f"Unexpected arguments for {type(self).__name__}: {list(kwargs)}"
@@ -192,7 +248,12 @@ class Entity(metaclass=EntityMeta):
             return self._data[name]
         except KeyError:
             try:
-                return self._table_data[name]
+                items = self._table_data[name]
+                if not isinstance(items, LineItemsCollection):
+                    tp = self._meta.table_parts.get(name)
+                    items = LineItemsCollection(items, parent=self, tp_meta=tp)
+                    self._table_data[name] = items
+                return items
             except KeyError:
                 raise AttributeError(name) from None
 
@@ -210,12 +271,68 @@ class Entity(metaclass=EntityMeta):
             self._data[name] = value
             return
         if hasattr(self, "_table_data") and name in self._table_data:
+            if not isinstance(value, LineItemsCollection):
+                tp = self._meta.table_parts.get(name)
+                value = LineItemsCollection(list(value), parent=self, tp_meta=tp)
             self._table_data[name] = value
             return
         object.__setattr__(self, name, value)
 
+    def save(self, db: Database) -> Entity:
+        """Save this entity into database (Active Record pattern)."""
+        return db.save(self)
+
+    def delete(self, db: Database) -> None:
+        """Delete this entity from database."""
+        db.delete(self)
+
+    @classmethod
+    def get(cls: type[TEntity], db: Database, id: int) -> TEntity | None:
+        """Fetch an entity instance by ID."""
+        return db.get(cls, id)  # type: ignore
+
+    @classmethod
+    def all(cls: type[TEntity], db: Database) -> list[TEntity]:
+        """Fetch all entity instances."""
+        return db.list(cls)  # type: ignore
+
+    @classmethod
+    def filter(cls: type[TEntity], db: Database, **kwargs: Any) -> list[TEntity]:
+        """Fetch entity instances matching field filter values."""
+        return db.filter(cls, **kwargs)  # type: ignore
+
+    def to_dict(self, include_table_parts: bool = True) -> dict[str, Any]:
+        """Convert entity data and table parts into a plain dictionary."""
+        res: dict[str, Any] = {"id": self._id}
+        res.update(self._data)
+        if include_table_parts:
+            for tp_name, items in self._table_data.items():
+                res[tp_name] = [dict(row) for row in items]
+        return res
+
+    @classmethod
+    def from_dict(cls: type[TEntity], data: dict[str, Any]) -> TEntity:
+        """Instantiate an entity from dictionary data."""
+        data_copy = dict(data)
+        ent_id = data_copy.pop("id", None)
+        if ent_id is None:
+            ent_id = data_copy.pop("_id", None)
+        instance = cls(**data_copy)
+        if ent_id is not None:
+            object.__setattr__(instance, "_id", ent_id)
+        return instance
+
     def __repr__(self) -> str:
+        name_val = self._data.get("name") or self._data.get("number") or self._data.get("code")
+        if name_val:
+            return f"<{type(self).__name__} id={self._id} '{name_val}'>"
         return f"<{type(self).__name__} id={self._id}>"
+
+    def __str__(self) -> str:
+        name_val = self._data.get("name") or self._data.get("number") or self._data.get("code")
+        if name_val:
+            return str(name_val)
+        return f"{type(self).__name__}(id={self._id})"
 
 
 class Catalog(Entity):

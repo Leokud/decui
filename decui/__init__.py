@@ -5,6 +5,7 @@ from .entity import (
     Document,
     Entity,
     LineItems,
+    LineItemsCollection,
     Lookup,
     MasterData,
     TablePart,
@@ -107,6 +108,7 @@ __all__ = [
     "Transaction",
     "TablePart",
     "LineItems",
+    "LineItemsCollection",
     "Command",
     "Action",
     # Field descriptors

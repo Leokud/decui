@@ -3,7 +3,7 @@
 [![Python](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/GUI-PySide6%20%28Qt6%29-green.svg)](https://wiki.qt.io/Qt_for_Python)
 [![SQLAlchemy](https://img.shields.io/badge/ORM-SQLAlchemy%202.0%2B-red.svg)](https://www.sqlalchemy.org/)
-[![Tests](https://img.shields.io/badge/Tests-pytest%2016%2F16%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-pytest%2023%2F23%20passed-brightgreen.svg)]()
 [![Web Tutorial](https://img.shields.io/badge/Web_Tutorial-GitHub_Pages-blueviolet.svg)](https://leokud.github.io/decui/)
 
 **DECUI** — это легковесный декларативный (metadata-driven) Python-фреймворк для создания настольных учетных и ERP-систем.
@@ -143,6 +143,35 @@ class SaleOrder(Transaction):
 
 ---
 
+## 🚀 CLI-утилита `decui` и эргономика (DX)
+
+Фреймворк включает CLI и инструменты для максимального удобства разработки:
+
+```bash
+# 1. Создать новый проект из шаблона
+decui new my_erp
+
+# 2. Запустить приложение
+decui run
+
+# 3. Запустить тесты
+decui test
+
+# 4. Собрать в исполняемый .exe файл
+decui build
+```
+
+### Ключевые возможности DX:
+- **Авто-названия полей (Auto-naming):** `name = String(required=True)` вместо дублирования `String("Name")`.
+- **Коллекция спецификаций:** `doc.Items.add(...)` и `doc.Items.total("amount")` без ручных циклов.
+- **Active Record:** `product.save(db)`, `product.delete(db)`, `Customer.filter(db, is_active=True)`.
+- **Сериализация:** `entity.to_dict()` и `Entity.from_dict(data)` для легкого обмена данными.
+- **Тестовые хелперы:** `Database.memory()` и `db.seed([e1, e2])`.
+
+> Подробное описание всех возможностей доступно в [docs/12-dx-guide.md](decui/docs/12-dx-guide.md).
+
+---
+
 ## 📦 Сборка в автономный .exe
 
 Вы можете собрать готовый исполняемый файл без консольного окна, который можно запустить на любом компьютере без установки Python:
@@ -171,6 +200,7 @@ uv run pytest -v
 | Документ | Описание |
 |---|---|
 | [**Интерактивный Веб-учебник**](https://leokud.github.io/decui/) | **Пошаговое интерактивное руководство в браузере (GitHub Pages)** |
+| [12-dx-guide.md](decui/docs/12-dx-guide.md) | **Руководство по Developer Experience: CLI, авто-поля, Active Record** |
 | [11-concepts-guide.md](decui/docs/11-concepts-guide.md) | **Концептуальное руководство: архитектура учета простыми словами** |
 | [01-quickstart.md](decui/docs/01-quickstart.md) | Пошаговый старт, установка и первые шаги |
 | [02-entities.md](decui/docs/02-entities.md) | Сущности (Master Data, Transaction), типы полей, валидация |
