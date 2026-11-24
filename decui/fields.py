@@ -71,16 +71,19 @@ class Field(Generic[T], ABC):
 class StringField(Field[str]):
     field_type: type = str
     max_length: int | None = None
+    multiline: bool = False
 
     def __init__(
         self,
         display_name: str | None = None,
         *,
         max_length: int | None = None,
+        multiline: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(display_name, **kwargs)
         self.max_length = max_length
+        self.multiline = multiline
 
     def _is_empty(self, value: str | None) -> bool:
         return value is None or value == ""

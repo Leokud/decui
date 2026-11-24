@@ -314,7 +314,7 @@ class ReportView(QScrollArea):
         if any_agg:
             data.append(total_row)
 
-        model = _TableModel(headers, data, has_totals=any_agg)
+        model = _TableModel(headers, data, raw_rows=rows, has_totals=any_agg)
         self._table.setModel(model)
 
 
@@ -328,11 +328,13 @@ class _TableModel(QAbstractTableModel):
         self,
         headers: list[str],
         rows: list[list[str]],
+        raw_rows: list[dict[str, Any]] | None = None,
         has_totals: bool = False,
     ) -> None:
         super().__init__()
         self._headers = headers
         self._rows = rows
+        self._raw_rows = raw_rows or []
         self._has_totals = has_totals
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
@@ -342,14 +344,46 @@ class _TableModel(QAbstractTableModel):
         return len(self._headers)
 
     def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
-        if role == Qt.ItemDataRole.DisplayRole and index.isValid():
-            val = self._rows[index.row()][index.column()]
-            return val
-        if role == Qt.FontRole and self._is_total_row(index):
+        if not index.isValid():
+            return None
+        row_idx = index.row()
+        col_idx = index.column()
+
+        if role == Qt.ItemDataRole.DisplayRole:
+            return self._rows[row_idx][col_idx]
+
+        if role == Qt.ItemDataRole.FontRole:
             from PySide6.QtGui import QFont
-            f = QFont()
-            f.setBold(True)
-            return f
+            if self._is_total_row(index):
+                f = QFont()
+                f.setBold(True)
+                return f
+            if 0 <= row_idx < len(self._raw_rows):
+                r = self._raw_rows[row_idx]
+                style = str(r.get("_style", "")).lower()
+                bold = bool(r.get("_bold")) or style in ("current", "active", "bold")
+                strike = bool(r.get("_strikeout")) or style in ("completed", "done")
+                if bold or strike:
+                    f = QFont()
+                    if bold:
+                        f.setBold(True)
+                    if strike:
+                        f.setStrikeOut(True)
+                    return f
+
+        if role == Qt.ItemDataRole.ForegroundRole:
+            if 0 <= row_idx < len(self._raw_rows):
+                from PySide6.QtGui import QColor
+                r = self._raw_rows[row_idx]
+                color = r.get("_color")
+                if color:
+                    return QColor(color)
+                style = str(r.get("_style", "")).lower()
+                if style in ("completed", "done"):
+                    return QColor(128, 128, 128)
+                if style in ("current", "active"):
+                    return QColor(13, 110, 253)
+
         return None
 
     def _is_total_row(self, index: QModelIndex) -> bool:

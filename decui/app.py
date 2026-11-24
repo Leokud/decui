@@ -52,7 +52,33 @@ class ERPApplication:
 
         self._main_window = _MainWindow(self._db, title=title)
         self._main_window.resize(1200, 800)
+        self._reminder_service: Any = None
 
+    def enable_reminders(
+        self,
+        entity_classes: list[type],
+        *,
+        date_field: str = "deadline",
+        done_field: str = "is_completed",
+        title_field: str = "name",
+        notify_before_minutes: int = 60,
+        check_interval_ms: int = 30000,
+    ) -> Any:
+        from decui.reminders import ReminderService
+        svc = ReminderService(
+            self._db,
+            entity_classes,
+            date_field=date_field,
+            done_field=done_field,
+            title_field=title_field,
+            notify_before_minutes=notify_before_minutes,
+            check_interval_ms=check_interval_ms,
+            parent=self._main_window,
+        )
+        svc.open_entity_requested.connect(self._main_window._on_edit)
+        svc.start()
+        self._reminder_service = svc
+        return svc
 
     def run(self) -> int:
         if hasattr(self, "_main_window") and self._main_window:
@@ -135,6 +161,7 @@ class _MainWindow(QMainWindow):
             list_view = ListView(entity_class, self._db)
             list_view.create_requested.connect(self._on_create)
             list_view.edit_requested.connect(self._on_edit)
+            list_view.copy_requested.connect(self._on_copy)
             self._content_layout.addWidget(list_view)
         except Exception as exc:
             import traceback
@@ -170,6 +197,22 @@ class _MainWindow(QMainWindow):
     def _on_edit(self, entity: Entity) -> None:
         full = self._db.get(type(entity), entity._id)
         self._show_form(type(entity), full or entity)
+
+    def _on_copy(self, entity: Entity) -> None:
+        full = self._db.get(type(entity), entity._id) or entity
+        data = full.to_dict()
+        data.pop("id", None)
+        data.pop("_id", None)
+        num_cfg = getattr(type(entity), "__numbering__", None)
+        if num_cfg:
+            field_name = num_cfg.get(
+                "field", "number" if entity._meta.is_document else "code"
+            )
+            data.pop(field_name, None)
+        if entity._meta.is_document:
+            data["posted"] = False
+        clone = type(entity).from_dict(data)
+        self._show_form(type(entity), clone)
 
     # ── Report view ──
 

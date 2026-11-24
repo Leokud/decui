@@ -15,6 +15,7 @@ from sqlalchemy import (
     Integer,
     Numeric,
     String,
+    Text,
     create_engine,
 )
 from sqlalchemy import event as sa_event
@@ -227,6 +228,8 @@ class Database:
         nullable = not field.required
 
         if isinstance(field, StringField):
+            if getattr(field, "multiline", False):
+                return Column(Text, nullable=nullable)
             return Column(String(field.max_length or 255), nullable=nullable)
 
         if isinstance(field, IntegerField):

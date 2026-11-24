@@ -76,11 +76,19 @@ from .reports import (
     StringParam,
     report,
 )
+from .reminders import (
+    ReminderDialog,
+    ReminderService,
+    celebrate_goal_completed,
+)
 
 __all__ = [
     # Application & Database
     "ERPApplication",
     "Database",
+    "ReminderService",
+    "ReminderDialog",
+    "celebrate_goal_completed",
     # Decorators (standard + aliases)
     "catalog",
     "master_data",

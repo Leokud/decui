@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLineEdit,
+    QPlainTextEdit,
     QSpinBox,
     QTimeEdit,
     QVBoxLayout,
@@ -74,6 +75,10 @@ def get_editor_value(widget: Any, field: Field) -> Any:
     is determined by *field* at runtime, not by the static type system.
     """
     if isinstance(field, StringField):
+        if getattr(field, "multiline", False) or isinstance(widget, QPlainTextEdit):
+            w_plain = cast(QPlainTextEdit, widget)
+            text = w_plain.toPlainText()
+            return text if text else None
         w = cast(QLineEdit, widget)
         text = w.text()
         return text if text else None
@@ -135,8 +140,13 @@ def set_editor_value(widget: Any, field: Field, value: Any) -> None:
     Same typing reasoning as ``get_editor_value``.
     """
     if isinstance(field, StringField):
-        w = cast(QLineEdit, widget)
-        w.setText(str(value) if value is not None else "")
+        val_str = str(value) if value is not None else ""
+        if getattr(field, "multiline", False) or isinstance(widget, QPlainTextEdit):
+            w_plain = cast(QPlainTextEdit, widget)
+            w_plain.setPlainText(val_str)
+        else:
+            w = cast(QLineEdit, widget)
+            w.setText(val_str)
 
     elif isinstance(field, IntegerField):
         w = cast(QSpinBox, widget)
@@ -211,7 +221,13 @@ def set_editor_value(widget: Any, field: Field, value: Any) -> None:
 
 # -- Concrete editor factories ----------------------------------------
 
-def _string_editor(field: StringField, parent: QWidget | None = None) -> QLineEdit:
+def _string_editor(field: StringField, parent: QWidget | None = None) -> QWidget:
+    if getattr(field, "multiline", False):
+        plain_edit = QPlainTextEdit(parent)
+        plain_edit.setMinimumHeight(70)
+        plain_edit.setMaximumHeight(160)
+        plain_edit.setReadOnly(field.read_only)
+        return plain_edit
     w = QLineEdit(parent)
     w.setMaxLength(field.max_length or 255)
     w.setReadOnly(field.read_only)

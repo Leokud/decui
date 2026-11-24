@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Qt, Signal
 from decui.fields import BooleanField
@@ -24,10 +24,11 @@ if TYPE_CHECKING:
 _ACTION_LABELS: dict[str, str] = {
     "New": "Новый",
     "Edit": "Изменить",
+    "Copy": "Копировать",
     "Delete": "Удалить",
     "Refresh": "Обновить",
 }
-DEFAULT_ACTIONS = ("New", "Edit", "Delete", "Refresh")
+DEFAULT_ACTIONS = ("New", "Edit", "Copy", "Delete", "Refresh")
 
 
 class ListView(QWidget):
@@ -36,6 +37,7 @@ class ListView(QWidget):
     entity_selected = Signal(object)
     create_requested = Signal(type)
     edit_requested = Signal(object)
+    copy_requested = Signal(object)
 
     def __init__(
         self,
@@ -117,7 +119,7 @@ class ListView(QWidget):
                     row.append(str(val) if val is not None else "")
             rows.append(row)
 
-        model = _TableModel(headers, rows)
+        model = _TableModel(headers, rows, self._items)
         self._table.setModel(model)
 
     # ------------------------------------------------------------------
@@ -132,6 +134,11 @@ class ListView(QWidget):
             entity = self._selected_entity()
             if entity is not None:
                 self.edit_requested.emit(entity)
+
+        elif action == "Copy":
+            entity = self._selected_entity()
+            if entity is not None:
+                self.copy_requested.emit(entity)
 
         elif action == "Delete":
             entity = self._selected_entity()
@@ -160,10 +167,16 @@ from PySide6.QtCore import QAbstractTableModel, QModelIndex  # noqa: E402
 
 
 class _TableModel(QAbstractTableModel):
-    def __init__(self, headers: list[str], rows: list[list[str]]) -> None:
+    def __init__(
+        self,
+        headers: list[str],
+        rows: list[list[str]],
+        items: list[Any] | None = None,
+    ) -> None:
         super().__init__()
         self._headers = headers
         self._rows = rows
+        self._items = items or []
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
         return len(self._rows)
@@ -172,9 +185,41 @@ class _TableModel(QAbstractTableModel):
         return len(self._headers)
 
     def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
-        if role == Qt.ItemDataRole.DisplayRole and index.isValid():
-            return self._rows[index.row()][index.column()]
+        if not index.isValid():
+            return None
+        row_idx = index.row()
+        col_idx = index.column()
+
+        if role == Qt.ItemDataRole.DisplayRole:
+            return self._rows[row_idx][col_idx]
+
+        if role == Qt.ItemDataRole.FontRole:
+            if 0 <= row_idx < len(self._items):
+                item = self._items[row_idx]
+                if self._is_item_done(item):
+                    from PySide6.QtGui import QFont
+                    f = QFont()
+                    f.setStrikeOut(True)
+                    return f
+
+        if role == Qt.ItemDataRole.ForegroundRole:
+            if 0 <= row_idx < len(self._items):
+                item = self._items[row_idx]
+                if self._is_item_done(item):
+                    from PySide6.QtGui import QColor
+                    return QColor(128, 128, 128)
+
         return None
+
+    def _is_item_done(self, item: Any) -> bool:
+        data = getattr(item, "_data", {})
+        for k in ("is_completed", "completed", "done", "is_done"):
+            if data.get(k) is True:
+                return True
+        status_val = str(data.get("status", "")).lower()
+        if status_val in ("завершена", "done", "completed", "выполнено"):
+            return True
+        return False
 
     def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.ItemDataRole.DisplayRole):
         if role == Qt.ItemDataRole.DisplayRole and orientation == Qt.Orientation.Horizontal:

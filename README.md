@@ -3,7 +3,7 @@
 [![Python](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/GUI-PySide6%20%28Qt6%29-green.svg)](https://wiki.qt.io/Qt_for_Python)
 [![SQLAlchemy](https://img.shields.io/badge/ORM-SQLAlchemy%202.0%2B-red.svg)](https://www.sqlalchemy.org/)
-[![Tests](https://img.shields.io/badge/Tests-pytest%2023%2F23%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-pytest%2030%2F30%20passed-brightgreen.svg)]()
 [![Web Tutorial](https://img.shields.io/badge/Web_Tutorial-GitHub_Pages-blueviolet.svg)](https://leokud.github.io/decui/)
 
 **DECUI** — это легковесный декларативный (metadata-driven) Python-фреймворк для создания настольных учетных и ERP-систем.
