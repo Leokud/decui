@@ -29,6 +29,7 @@ class ERPApplication:
         self,
         argv: list[str] | None = None,
         db_path: str = ":memory:",
+        title: str = "ERP Система",
     ) -> None:
         self._qt_app = QApplication(argv or [])
 
@@ -46,11 +47,12 @@ class ERPApplication:
                 f"Отчёты: {reports}\n"
                 f"Ошибка:\n{self._db._last_error}",
             )
-            self._main_window = _MainWindow(self._db)
+            self._main_window = _MainWindow(self._db, title=title)
             return
 
-        self._main_window = _MainWindow(self._db)
+        self._main_window = _MainWindow(self._db, title=title)
         self._main_window.resize(1200, 800)
+
 
     def run(self) -> int:
         if hasattr(self, "_main_window") and self._main_window:
@@ -69,12 +71,12 @@ class ERPApplication:
 class _MainWindow(QMainWindow):
     """Main application window with navigation sidebar and content area."""
 
-    def __init__(self, database: Database) -> None:
+    def __init__(self, database: Database, title: str = "ERP Система") -> None:
         super().__init__()
         self._db = database
         self._current_entity_class: type | None = None
 
-        self.setWindowTitle("ERP Система")
+        self.setWindowTitle(title)
 
         central = QWidget()
         self.setCentralWidget(central)

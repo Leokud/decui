@@ -1,121 +1,185 @@
-# DECUI — Декларативный ERP-фреймворк
+# DECUI — Декларативный ERP-фреймворк для Python
 
-Python 3.12+ · PySide6 · SQLAlchemy · SQLite
+[![Python](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](https://www.python.org/)
+[![PySide6](https://img.shields.io/badge/GUI-PySide6%20%28Qt6%29-green.svg)](https://wiki.qt.io/Qt_for_Python)
+[![SQLAlchemy](https://img.shields.io/badge/ORM-SQLAlchemy%202.0%2B-red.svg)](https://www.sqlalchemy.org/)
+[![Tests](https://img.shields.io/badge/Tests-pytest%2016%2F16%20passed-brightgreen.svg)]()
 
-Пользователь пишет **только метаданные и бизнес-логику** — фреймворк сам генерирует
-SQL-модели, формы, списки, навигацию, табличные части и отчёты.
+**DECUI** — это легковесный декларативный (metadata-driven) Python-фреймворк для создания настольных учетных и ERP-систем.
 
-## Быстрый старт
+Вы описываете **только структуру данных и бизнес-логику в виде Python-классов** — фреймворк автоматически генерирует:
+- Таблицы базы данных в SQLite и модели SQLAlchemy
+- Оконные формы создания и редактирования с валидацией (`AutoForm`)
+- Списки записей с сортировкой и CRUD-операциями (`ListView`)
+- Дерево навигации по разделам и модулям (`NavigationPanel`)
+- Табличные части / спецификации с автокалькуляцией сумм (`@line_items`)
+- Регистры накопления остатков и истории значений (`@ledger`, `@history_register`)
+- Параметрические отчёты с автоматическими фильтрами, агрегацией и диаграммами (`@report`)
+- Сборку в единый независимый файл `.exe` через PyInstaller
 
-```bash
-pip install PySide6 sqlalchemy pyinstaller
-cd decui
+---
 
-# Демо-пример: товары + счёт с табличной частью
-python examples/simple.py
+## 🎯 Для кого этот фреймворк?
 
-# Пример: центр развития детей (возрасты, кружки, расписание)
-python examples/vunderkind.py
-```
+- **Python-разработчикам:** Вам нужно быстро сделать рабочее настольное приложение для учета заказов, склада, клиентов или финансов? Не нужно вручную верстать виджеты Qt, писать SQL-запросы или связывать сигналы форм — фреймворк сделает это сам.
+- **Разработчикам 1С и ERP-систем:** Вы найдете знакомые и проверенные концепции (справочники, документы, движения, регистры, проведение), но написанные на чистом, типизированном Python с поддержкой современных библиотек, Git и тестов.
 
-Сборка .exe:
-```bash
-python build_exe.py
-# dist/ERP/ERP.exe  (single-file, без консоли)
-```
+---
 
-## 10 строк — и всё готово
+## 📚 Терминология: Общепринятые понятия vs 1С
+
+DECUI предоставляет удобные синонимы. Вы можете писать код в терминах классического бэкенда/ERP или в привычных терминах 1С:
+
+| Общепринятый термин (ERP / Backend) | Термин 1С | DECUI API | Назначение |
+|---|---|---|---|
+| **Master Data / Lookup** | Справочник | `Catalog` / `MasterData`, `@catalog` / `@master_data` | Списки условно-постоянных объектов (товары, клиенты) |
+| **Transaction / Document** | Документ | `Document` / `Transaction`, `@document` / `@transaction` | Хозяйственные операции, привязанные ко времени |
+| **Line Items / Child Table** | Табличная часть | `@line_items` / `@tab_part` | Строки спецификаций внутри документа |
+| **Form Action** | Команда | `@action` / `@command` | Кнопка на форме с привязанной бизнес-логикой |
+| **Balance Ledger** | Регистр накопления | `@ledger` / `@accumulation` | Журнал учета остатков и оборотов (склад, касса) |
+| **Value History** | Регистр сведений | `@history_register` / `@information` | Хранение параметров во времени (курсы валют, тарифы) |
+| **Ledger Entry** | Движение | `LedgerEntry` / `Movement` | Единичная запись изменения баланса (`+` / `-`) |
+| **Posting / Approval** | Проведение | `doc.post()`, `doc.submit()`, `doc.is_posted` | Фиксация документа и создание записей в регистрах |
+| **Sequence Numbering** | Автонумерация | `__numbering__ = {"prefix": "INV", ...}` | Генерация номеров по шаблону (`INV-2026-000001`) |
+| **Navigation Section** | Подсистема | `__section__ = "Склад/Товары"` | Группировка в левом дереве навигации |
+| **Report** | Отчёт | `Report` / `QueryReport`, `@report` | Экран параметрического отчёта с агрегацией и графиком |
+
+> Подробное руководство по концепциям учета доступно в [docs/11-concepts-guide.md](decui/docs/11-concepts-guide.md).
+
+---
+
+## ⚡ Быстрый старт: 10 строк кода
+
+Создайте файл `app.py`:
 
 ```python
-from decui import catalog, Catalog, String, Decimal as D
+from decui import ERPApplication, MasterData, String, Decimal as D, master_data
 
-@catalog
-class Product(Catalog):
+@master_data
+class Product(MasterData):
+    __verbose_name__ = "Товары"
+    __section__      = "Склад"
+
     name  = String("Наименование", required=True)
-    price = D("Цена", precision=10, scale=2, required=True)
+    price = D("Цена", precision=10, scale=2, min_value=0)
+
+if __name__ == "__main__":
+    app = ERPApplication(title="Учет товаров", db_path="warehouse.db")
+    app.run()
 ```
 
-Фреймворк сам создаёт: таблицу в SQLite, форму для ввода, список для просмотра,
-пункт в навигации, кнопки Сохранить / Закрыть.
-
-## Возможности
-
-| Возможность | Статус | Документация |
-|---|---|---|
-| Справочники (Catalog) | ✅ | [docs/02-entities.md](decui/docs/02-entities.md) |
-| Документы (Document) | ✅ | [docs/02-entities.md](decui/docs/02-entities.md) |
-| Табличные части (@tab_part) | ✅ | [docs/03-table-parts.md](decui/docs/03-table-parts.md) |
-| Команды (@command) | ✅ | [docs/04-commands.md](decui/docs/04-commands.md) |
-| Отчёты с параметрами (@report) | ✅ | [docs/05-reports.md](decui/docs/05-reports.md) |
-| Автонумерация (1C-формат) | ✅ | [docs/06-numbering.md](decui/docs/06-numbering.md) |
-| Сборка .exe (PyInstaller) | ✅ | [docs/07-building.md](decui/docs/07-building.md) |
-| Регистры накопления | ✅ | [docs/09-advanced.md](decui/docs/09-advanced.md) |
-| Регистры сведений | ✅ | [docs/09-advanced.md](decui/docs/09-advanced.md) |
-| Движения по регистрам | ✅ | [docs/09-advanced.md](decui/docs/09-advanced.md) |
-| Столбчатые диаграммы | ✅ | [docs/09-advanced.md](decui/docs/09-advanced.md) |
-| Валютный учёт (currency) | ✅ | [docs/09-advanced.md](decui/docs/09-advanced.md) |
-| Роли и права | ✅ | [docs/09-advanced.md](decui/docs/09-advanced.md) |
-| Последовательность док-тов | ✅ | [docs/09-advanced.md](decui/docs/09-advanced.md) |
-| Авто-миграция схемы БД | ✅ | [docs/07-building.md](decui/docs/07-building.md) |
-
-## Архитектура
-
-```
-┌─────────────┐    ┌──────────────┐    ┌───────────────┐
-│  Метаданные │───▶│  EntityMeta  │───▶│   Metadata    │
-│  (классы)   │    │  (метакласс) │    │  (поля, тч,   │
-│             │    │              │    │   команды)    │
-└─────────────┘    └──────────────┘    └───────┬───────┘
-                                              │
-                    ┌─────────────────────────┼──────────┐
-                    ▼                         ▼          ▼
-            ┌──────────────┐         ┌────────────┐ ┌────────┐
-            │  SQLAlchemy  │         │   AutoForm │ │ListView│
-            │  (CREATE     │         │   (форма)  │ │(список)│
-            │   TABLE)     │         └────────────┘ └────────┘
-            └──────────────┘
+Запустите:
+```bash
+python app.py
 ```
 
-## Принципы
+Фреймворк автоматически создаст таблицу SQLite, откроет главное окно, сформирует дерево меню «Склад → Товары», таблицу просмотра со списком и диалоговые окна создания и редактирования товаров.
 
-- **Metadata-first** — класс описывает структуру, фреймворк строит UI
-- **Чистый Qt** (QWidget), без QML и web-технологий
-- **Композиция, не наследование** — каждый компонент заменяем
-- **Без eval/exec** — статический анализ, PyInstaller без проблем
-- **Без XML-форм** — только Python
-- **Авто-миграция** — при изменении схемы данных таблицы пересоздаются
+---
 
-## Все типы полей
+## 🛠 Пример с транзакциями, строками и регистрами
 
-| Тип | Qt-виджет | Параметры |
-|---|---|---|
-| `String("Имя")` | QLineEdit | `required`, `max_length` |
-| `Integer("Кол-во")` | QSpinBox | `min_value`, `max_value`, `default` |
-| `Decimal("Цена")` | QDoubleSpinBox | `precision`, `scale`, `min_value`, `max_value`, `currency` |
-| `Boolean("Флаг")` | QCheckBox | — |
-| `Date("Дата")` | QDateEdit | `default` |
-| `DateTime("Момент")` | QDateTimeEdit | `default` |
-| `Time("Время")` | QTimeEdit | `default` |
-| `Choice("Дни")` | QGroupBox+QCheckBox | `choices`, `separator` |
-| `Ref(Entity, "Метка")` | QComboBox | `representation_field`, `auto_fill` |
+```python
+from decimal import Decimal
+from decui import (
+    ERPApplication, MasterData, Transaction, String, Integer, Decimal as D, Ref,
+    master_data, transaction, line_items, action, ledger, Ledger, Dimension, Metric, LedgerEntry
+)
 
-## Полная документация
+# 1. Справочник товаров
+@master_data
+class Item(MasterData):
+    name = String("Товар", required=True)
+    price = D("Цена", precision=10, scale=2, default=Decimal("0.00"))
 
-| Файл | Содержание |
+# 2. Регистр остатков склада
+@ledger
+class StockLedger(Ledger):
+    product = Dimension("Товар")
+    qty = Metric("Количество")
+
+# 3. Документ продажи
+@transaction
+class SaleOrder(Transaction):
+    __verbose_name__ = "Заказы покупателей"
+    __section__ = "Продажи"
+
+    customer = String("Покупатель", required=True)
+    total = D("Итого", precision=10, scale=2, read_only=True, default=Decimal("0.00"))
+
+    # Табличная часть со строками заказа
+    @line_items
+    class Items:
+        product  = Ref(Item, "Товар", representation_field="name")
+        quantity = Integer("Кол-во", default=1, min_value=1)
+        price    = D("Цена", precision=10, scale=2)
+        amount   = D("Сумма", precision=10, scale=2, read_only=True)
+
+    # Кнопка пересчета суммы на форме
+    @action("Пересчитать")
+    def calc(self):
+        self.total = sum(
+            Decimal(str(r.get("quantity", 1))) * Decimal(str(r.get("price", 0)))
+            for r in self._table_data.get("Items", [])
+        )
+
+    # Движения по складу при проведении заказа (списание товара)
+    def get_ledger_entries(self):
+        return [
+            LedgerEntry(
+                register=StockLedger,
+                dimensions={"product": row["product"]},
+                resources={"qty": row["quantity"]},
+                is_income=False,  # списание со склада
+            )
+            for row in self._table_data.get("Items", [])
+        ]
+```
+
+---
+
+## 📦 Сборка в автономный .exe
+
+Вы можете собрать готовый исполняемый файл без консольного окна, который можно запустить на любом компьютере без установки Python:
+
+```bash
+python build_exe.py
+# Готовый бинарник будет сохранен в: dist/ERP (или dist/ERP.exe на Windows)
+```
+
+---
+
+## 🧪 Запуск тестов
+
+В проект включен набор тестов на базе `pytest`:
+
+```bash
+uv run pytest -v
+```
+
+Все тесты выполняются в Qt offscreen-режиме и покрывают ORM, генерацию моделей, валидацию полей, автонумерацию, расчет остатков и сборку интерфейса.
+
+---
+
+## 📖 Полная документация
+
+| Документ | Описание |
 |---|---|
-| [docs/01-quickstart.md](decui/docs/01-quickstart.md) | Установка, запуск, примеры |
-| [docs/02-entities.md](decui/docs/02-entities.md) | Справочники, документы, поля, разделы |
-| [docs/03-table-parts.md](decui/docs/03-table-parts.md) | Табличные части |
-| [docs/04-commands.md](decui/docs/04-commands.md) | Команды, бизнес-логика |
-| [docs/05-reports.md](decui/docs/05-reports.md) | Отчёты, агрегация, форматирование |
-| [docs/06-numbering.md](decui/docs/06-numbering.md) | Автонумерация (1C-формат) |
-| [docs/07-building.md](decui/docs/07-building.md) | Сборка .exe, авто-миграция |
-| [docs/08-api.md](decui/docs/08-api.md) | Полный справочник API |
-| [docs/09-registers.md](decui/docs/09-registers.md) | Регистры накопления и сведений |
-| [docs/10-reports.md](decui/docs/10-reports.md) | Отчёты: параметры, агрегация, формат, диаграммы |
-| [docs/09-advanced.md](decui/docs/09-advanced.md) | Роли, миграция, последовательность |
+| [11-concepts-guide.md](decui/docs/11-concepts-guide.md) | **Концептуальное руководство: архитектура учета простыми словами** |
+| [01-quickstart.md](decui/docs/01-quickstart.md) | Пошаговый старт, установка и первые шаги |
+| [02-entities.md](decui/docs/02-entities.md) | Сущности (Master Data, Transaction), типы полей, валидация |
+| [03-table-parts.md](decui/docs/03-table-parts.md) | Табличные части и спецификации строк (`@line_items`) |
+| [04-commands.md](decui/docs/04-commands.md) | Действия и кнопки на форме (`@action` / `@command`) |
+| [05-reports.md](decui/docs/05-reports.md) | Построение отчётов, параметры, форматирование |
+| [06-numbering.md](decui/docs/06-numbering.md) | Автонумерация и шаблоны номеров |
+| [07-building.md](decui/docs/07-building.md) | Сборка standalone .exe через PyInstaller и авто-миграции |
+| [08-api.md](decui/docs/08-api.md) | Полный справочник всех классов, методов и функций API |
+| [09-registers.md](decui/docs/09-registers.md) | Регистры накопления, регистры сведений и работа с остатками |
+| [10-reports.md](decui/docs/10-reports.md) | Расширенные отчёты, агрегации и столбчатые диаграммы (`BarChart`) |
+| [09-advanced.md](decui/docs/09-advanced.md) | Роли, права, последовательность проведения |
 
-## Для AI-ассистентов
+---
 
-`AGENTS.md` — полный контекст для LLM: архитектура, соглашения, частые ошибки.
-`.clinerules` — правила для код-ревью и генерации кода.
+## 📄 Лицензия
+
+MIT License.

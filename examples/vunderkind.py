@@ -270,8 +270,9 @@ def _seed_data(db):
         ),
     ]
     for s in starts:
+        s.start()
         db.save(s)
-    print(f"  [OK] Стартов кружков: {len(starts)}")
+    print(f"  [OK] Стартов кружков: {len(starts)} (запущены)")
     for s in starts:
         tchr = db.get(Teacher, s.teacher)
         crc = db.get(Circle, s.circle)

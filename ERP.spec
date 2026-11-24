@@ -1,15 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('F:\\projects\\decui\\decui', 'decui')]
+datas = [('/run/media/leokud/hdd500/projects/decui/decui', 'decui')]
 binaries = []
-hiddenimports = ['sqlalchemy.sql.default_comparator', 'sqlalchemy.ext.declarative', 'sqlalchemy.orm', 'decui', 'decui.fields', 'decui.entity', 'decui.registry', 'decui.commands', 'decui.orm', 'decui.numbering', 'decui.reports', 'decui.entity', 'decui.ui', 'decui.ui.report_view', 'decui.ui.editors', 'decui.ui.form', 'decui.ui.listview', 'decui.ui.navigation', 'decui.app']
+hiddenimports = ['sqlalchemy.sql.default_comparator', 'sqlalchemy.ext.declarative', 'sqlalchemy.orm', 'decui', 'decui.fields', 'decui.entity', 'decui.registry', 'decui.commands', 'decui.orm', 'decui.numbering', 'decui.movement', 'decui.sequence', 'decui.reports', 'decui.app', 'decui.ui', 'decui.ui.editors', 'decui.ui.form', 'decui.ui.listview', 'decui.ui.navigation', 'decui.ui.report_view', 'decui.ui.chart']
 tmp_ret = collect_all('sqlalchemy')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
 a = Analysis(
-    ['F:\\projects\\decui\\examples\\simple.py'],
+    ['/run/media/leokud/hdd500/projects/decui/examples/simple.py'],
     pathex=[],
     binaries=binaries,
     datas=datas,

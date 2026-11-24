@@ -57,6 +57,7 @@ def clear() -> None:
 # ── Decorators ─────────────────────────────────────────────────────
 
 def catalog(cls: type) -> type:
+    """Register a master data / catalog entity (subclass of ``Catalog`` / ``MasterData``)."""
     if not isinstance(cls, EntityMeta):
         raise TypeError(f"@catalog requires an Entity subclass, got {type(cls)}")
     cls._meta.entity_type = "catalog"
@@ -64,9 +65,20 @@ def catalog(cls: type) -> type:
     return cls
 
 
+# Universal aliases for @catalog
+lookup = catalog
+master_data = catalog
+
+
 def document(cls: type) -> type:
+    """Register a transaction / document entity (subclass of ``Document`` / ``Transaction``)."""
     if not isinstance(cls, EntityMeta):
         raise TypeError(f"@document requires an Entity subclass, got {type(cls)}")
     cls._meta.entity_type = "document"
     register_entity(cls)
     return cls
+
+
+# Universal alias for @document
+transaction = document
+

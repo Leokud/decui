@@ -1,121 +1,197 @@
-# Полное API
+# Полный справочник API DECUI
 
-## Импорт
+Все ключевые классы, декораторы и функции экспортируются напрямую из пакета `decui`:
 
 ```python
 from decui import (
-    # Декораторы
-    catalog,           # @catalog       — справочник
-    document,          # @document      — документ
-    command,           # @command("Имя") — команда
-    tab_part,          # @tab_part      — табличная часть
-    report,            # @report        — отчёт
+    # Приложение и база данных
+    ERPApplication, Database,
+
+    # Декораторы сущностей
+    catalog, master_data, lookup,
+    document, transaction,
+    tab_part, line_items, child_table,
+    command, action,
+
+    # Декораторы регистров
+    accumulation, ledger, balance_ledger,
+    information, history_register, value_history,
 
     # Базовые классы
-    Entity,            # Базовый класс сущности
-    Catalog,           # Базовый класс справочника
-    Document,          # Базовый класс документа
-    Report,            # Базовый класс отчёта
+    Entity, Catalog, MasterData, Lookup,
+    Document, Transaction, TablePart, LineItems,
+    Register, Ledger, AccumulationRegister, InformationRegister, HistoryRegister, ValueHistory,
+    Movement, LedgerEntry, Dimension, RefDimension, Resource, Metric,
 
-    # Поля
-    String,            # Строка
-    Integer,           # Целое (min_value, max_value)
-    Decimal,           # Десятичное (precision, scale, min_value, max_value)
-    Boolean,           # Да/Нет
-    Date,              # Дата (дд.мм.гггг)
-    DateTime,          # Дата+время (дд.мм.гггг ЧЧ:ММ)
-    Time,              # Время (ЧЧ:ММ)
-    Choice,            # Множественный выбор (чекбоксы)
-    Ref,               # Ссылка (auto_fill, representation_field)
+    # Дескрипторы полей
+    String, Integer, Decimal, Boolean, Date, DateTime, Time, Choice, Ref, Field,
 
-    # Параметры отчётов
-    Column,            # Колонка таблицы отчёта
-    DateParam,         # Параметр-дата (default)
-    RefParam,          # Параметр-ссылка
-    StringParam,       # Параметр-строка
+    # Работа с регистрами и движениями
+    get_balance, get_ledger_balance, get_records, get_latest, get_slice_last, set_record,
+    write_movements, clear_movements,
+
+    # Отчёты и параметры
+    report, Report, QueryReport, Column,
+    StringParam, IntegerParam, NumberParam, DecimalParam, BooleanParam, DateParam, RefParam,
 )
 ```
 
-## Декораторы
+---
 
-### `@catalog`
-
-Регистрирует справочник. Класс должен наследовать `Catalog`.
-
-### `@document`
-
-Регистрирует документ. Класс должен наследовать `Document`.
-
-### `@command(name)`
-
-Делает метод кнопкой на форме. После выполнения сохраняет документ.
-
-### `@tab_part`
-
-Превращает вложенный класс в табличную часть.
-
-### `@report`
-
-Регистрирует отчёт. Класс должен наследовать `Report`.
-
-## Базовые классы
-
-### `Entity`
+## 1. Запуск приложения (`ERPApplication`)
 
 ```python
-class Product(Entity): ...
-entity._data          # dict — значения полей
-entity._table_data    # dict — строки табличных частей
-entity._id            # int | None — первичный ключ
-entity.name           # доступ к полю через __getattr__
+app = ERPApplication(
+    title="Моя ERP Система",       # Заголовок главного окна
+    db_path="erp.db",             # Путь к SQLite (или ":memory:")
+    argv=None                     # Аргументы командной строки sys.argv
+)
+app.run()                         # Запуск цикла событий Qt
 ```
 
-### `Catalog(Entity)`
+- `app.main_window`: главное окно `QMainWindow`.
+- `app.database`: экземпляр `Database`.
 
-То же, что Entity. `_entity_type = "catalog"`.
+---
 
-### `Document(Entity)`
-
-Добавляет поля: `date` (DateTime), `number` (String), `posted` (Boolean, read_only).
-
-### `Report`
+## 2. База данных (`Database`)
 
 ```python
-class SalesReport(Report):
-    title = "Название"
-    columns = [Column(...)]
-    def execute(self, db, **params): ...
+db = Database("erp.db")
+
+db.save(entity)          # INSERT (если id is None) или UPDATE + сохранение строк спецификаций
+db.get(Class, id)        # Получить объект по первичному ключу со всеми строками спецификаций
+db.list(Class)           # Получить список всех объектов (краткая выгрузка без тяжелых строк)
+db.delete(entity)        # Удалить объект и каскадно удалить строки спецификаций
 ```
 
-## Класс-параметры сущностей
+---
 
-| Атрибут | Назначение |
-|---|---|
-| `__verbose_name__ = "Товары"` | Отображается в навигации |
-| `__section__ = "Расписание"` | Группировка в навигации |
-| `__numbering__ = {"prefix": "PRD"}` | Автонумерация |
-| `__defaults__ = {"field": lambda db: ...}` | Значения по умолчанию |
+## 3. Сущности
 
-## Database
+### `@catalog` / `@master_data` / `@lookup`
+
+Регистрирует справочник / нормативно-справочную сущность.
 
 ```python
-from decui.orm import Database
+@master_data
+class Customer(MasterData):
+    __verbose_name__ = "Контрагенты"
+    __section__      = "Продажи"
+    __numbering__    = {"prefix": "CTR", "pattern": "{prefix}-{seq:06d}"}
 
-db = Database("data.db")   # или ":memory:"
-db.save(entity)            # INSERT или UPDATE
-db.get(Product, 1)         # SELECT по id (с табличными частями)
-db.list(Product)           # SELECT все
-db.delete(entity)          # DELETE
+    code = String("Код", read_only=True)
+    name = String("Наименование", required=True)
 ```
 
-## Кнопки на форме
+### `@document` / `@transaction`
 
-| Кнопка | Действие |
-|---|---|
-| **Сохранить** | Валидация → save() → остаться на форме |
-| **Сохранить и закрыть** | Валидация → save() → сигнал closed → список |
-| **Закрыть** | Сигнал closed → список (без сохранения) |
+Регистрирует документ / транзакцию. Автоматически наследует поля:
+- `date` (`DateTimeField`): момент фиксации операции.
+- `number` (`StringField`): уникальный номер.
+- `posted` (`BooleanField`): признак учтённости / проведения (`read_only`).
 
-Для документов:
-| **Провести и закрыть** | Команда → save → closed → список |
-| **Закрыть** | save → closed → список (авто-сохранение) |
+#### Методы и свойства `Document` / `Transaction`:
+- `doc.post()` / `doc.submit()` — пометить документ как проведенный (`posted = True`).
+- `doc.unpost()` / `doc.cancel()` — снять проведение (`posted = False`).
+- `doc.is_posted` — булево свойство проверки статуса проведения.
+- `doc.get_ledger_entries()` / `doc.get_movements()` — возвращает список `LedgerEntry` / `Movement` при проведении.
+- `doc.write_movements(db)` — записать движения в регистры.
+- `doc.clear_movements(db)` — удалить движения этого документа из регистров.
+
+```python
+@transaction
+class Invoice(Transaction):
+    __verbose_name__ = "Счета"
+    __section__      = "Продажи"
+    __numbering__    = {"prefix": "INV", "pattern": "{prefix}-{year}-{seq:06d}"}
+
+    total = Decimal("Итого", read_only=True)
+
+    @line_items
+    class Items:
+        product  = Ref(Product, "Товар")
+        quantity = Integer("Кол-во", default=1)
+        price    = Decimal("Цена")
+        amount   = Decimal("Сумма", read_only=True)
+
+    @action("Рассчитать")
+    def calc(self):
+        ...
+
+    def get_ledger_entries(self):
+        return [
+            LedgerEntry(
+                register=StockLedger,
+                dimensions={"product": r["product"]},
+                resources={"quantity": r["quantity"]},
+                is_income=False,
+            )
+            for r in self._table_data.get("Items", [])
+        ]
+```
+
+---
+
+## 4. Поля (`Field`)
+
+| Тип | Назначение | Параметры |
+|---|---|---|
+| `String(name)` | Строка (`QLineEdit`) | `required`, `max_length`, `read_only`, `default` |
+| `Integer(name)` | Целое число (`QSpinBox`) | `required`, `min_value`, `max_value`, `default` |
+| `Decimal(name)` | Десятичное число (`QDoubleSpinBox`) | `precision`, `scale`, `min_value`, `max_value`, `currency` |
+| `Boolean(name)` | Флаг (`QCheckBox`) | `default` |
+| `Date(name)` | Дата (`QDateEdit`) | `required`, `default` |
+| `DateTime(name)` | Дата и время (`QDateTimeEdit`) | `required`, `default` |
+| `Time(name)` | Время (`QTimeEdit`) | `required`, `default` |
+| `Choice(name)` | Множественный выбор (`QGroupBox + QCheckBox`) | `choices=[("CODE", "Label")]`, `separator="|"` |
+| `Ref(Target, name)`| Внешний ключ (`QComboBox`) | `representation_field`, `auto_fill`, `required` |
+
+---
+
+## 5. Регистры и движения
+
+### Регистры остатков (`@ledger` / `@accumulation`)
+```python
+@ledger
+class WarehouseStock(Ledger):
+    warehouse = Dimension("Склад")
+    product   = Dimension("Товар")
+    qty       = Metric("Количество", field_type=Decimal)
+```
+
+- `get_ledger_balance(db, register, on_date=None, group_by=None, **filters)` — расчет остатков.
+
+### Регистры сведений (`@history_register` / `@information`)
+```python
+@history_register
+class PriceHistory(HistoryRegister):
+    product = Dimension("Товар")
+    price   = Resource("Цена", field_type=Decimal)
+```
+
+- `set_record(db, register, dimensions=..., resources=...)` — записать строку.
+- `get_latest(db, register, on_date=None, **dim_filters)` — срез последних.
+- `get_records(db, register, order_by=..., limit=..., **filters)` — список записей.
+
+---
+
+## 6. Отчёты (`@report` / `QueryReport`)
+
+```python
+@report
+class StockReport(QueryReport):
+    title = "Остатки товаров"
+    columns = [
+        Column("Товар", "product", width=250),
+        Column("Остаток", "qty", width=120, align="right", aggregate="sum"),
+    ]
+
+    # Параметры фильтра
+    date_to = DateParam("На дату", default=datetime.date.today)
+    min_qty = IntegerParam("Мин. остаток", default=0)
+
+    def execute(self, db, date_to=None, min_qty=0, **kwargs):
+        # Возвращает список словарей со строками
+        return [...]
+```

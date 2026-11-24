@@ -56,7 +56,7 @@ class RefDimension(Dimension):
 
 
 class Resource:
-    """Ресурс регистра (числовое значение)."""
+    """Ресурс регистра (числовое значение / метрика)."""
 
     def __init__(
         self,
@@ -68,6 +68,10 @@ class Resource:
         self.name = name
         self.field_type = field_type
         self.required = required
+
+
+# Universal alias for Resource
+Metric = Resource
 
 
 # ── Метаданные регистра ────────────────────────────────────────────
@@ -93,7 +97,7 @@ class RegisterMeta:
 # ── Базовый класс регистра ────────────────────────────────────────
 
 class Register:
-    """Базовый класс для всех регистров."""
+    """Базовый класс для всех регистров (Ledgers / History Stores)."""
 
     _register_meta: ClassVar[RegisterMeta]
 
@@ -121,11 +125,19 @@ class Register:
             object.__setattr__(self, name, value)
 
 
-    # ── Движение ───────────────────────────────────────────────────────
+# Universal aliases for Register
+Ledger = Register
+AccumulationRegister = Register
+InformationRegister = Register
+HistoryRegister = Register
+ValueHistory = Register
+
+
+# ── Движение ───────────────────────────────────────────────────────
 
 @dataclass
 class Movement:
-    """Одна запись движения по регистру.
+    """Одна запись движения по регистру (Ledger Entry).
 
     Ресурсы указываются положительными числами.
     Флаг is_income определяет знак: приход (+), расход (-).
@@ -140,6 +152,11 @@ class Movement:
     is_income: bool = True
     doc_id: int | None = None
     doc_type: str | None = None
+
+
+# Universal alias for Movement
+LedgerEntry = Movement
+
 
 
 # ── Регистрация ────────────────────────────────────────────────────
@@ -159,19 +176,30 @@ def get_all_registers() -> list[type[Register]]:
 # ── Декоратор регистра ─────────────────────────────────────────────
 
 def accumulation(cls: type) -> type[Register]:
-    """Декоратор: регистр накопления (остатки/обороты)."""
+    """Декоратор: регистр накопления (Balance Ledger / остатки и обороты)."""
     dims, ress = _collect_members(cls)
     cls._register_meta = RegisterMeta(cls.__name__, dims, ress, "accumulation")
     register_register(cls)
     return cls
 
 
+# Universal aliases for @accumulation
+ledger = accumulation
+balance_ledger = accumulation
+
+
 def information(cls: type) -> type[Register]:
-    """Декоратор: регистр сведений (периодические значения)."""
+    """Декоратор: регистр сведений (Value History / периодические значения и срезы)."""
     dims, ress = _collect_members(cls)
     cls._register_meta = RegisterMeta(cls.__name__, dims, ress, "information")
     register_register(cls)
     return cls
+
+
+# Universal aliases for @information
+history_register = information
+value_history = information
+
 
 
 def _collect_members(cls: type) -> tuple[dict[str, Dimension], dict[str, Resource]]:
@@ -200,6 +228,8 @@ def create_register_models(engine: Any, base: Any) -> None:
 
     for cls in get_all_registers():
         meta = cls._register_meta
+        if meta.orm_model is not None:
+            continue
         table_name = _reg_table_name(meta.name)
         attrs: dict[str, Any] = {
             "__tablename__": table_name,
@@ -328,3 +358,115 @@ def get_balance(db: Database, register_cls: type[Register],
                     entry[rn] = float(val) if val is not None else 0
                 result.append(entry)
     return result
+
+
+# Universal alias for get_balance
+get_ledger_balance = get_balance
+
+
+def get_records(
+    db: Database,
+    register_cls: type[Register],
+    on_date: datetime.date | None = None,
+    order_by: str | None = None,
+    desc: bool = False,
+    limit: int | None = None,
+    **dim_filters: Any,
+) -> list[dict[str, Any]]:
+    """Получить сырые записи регистра с фильтрацией (для регистров сведений и логов).
+
+    Пример:
+        rates = get_records(db, CurrencyRate, currency="USD")
+    """
+    from sqlalchemy.orm import sessionmaker
+    Session = sessionmaker(bind=db._engine)
+    meta = register_cls._register_meta
+    model_class = meta.orm_model
+    if model_class is None:
+        return []
+    with Session() as session:
+        q = session.query(model_class)
+        if on_date and hasattr(model_class, "period"):
+            q = q.filter(model_class.period <= on_date)
+        for k, v in dim_filters.items():
+            if hasattr(model_class, k):
+                q = q.filter(getattr(model_class, k) == v)
+        if order_by and hasattr(model_class, order_by):
+            col = getattr(model_class, order_by)
+            q = q.order_by(col.desc() if desc else col.asc())
+        elif hasattr(model_class, "id"):
+            col = getattr(model_class, "id")
+            q = q.order_by(col.desc() if desc else col.asc())
+        if limit is not None:
+            q = q.limit(limit)
+        rows = q.all()
+        result: list[dict[str, Any]] = []
+        for r in rows:
+            row_dict: dict[str, Any] = {}
+            if hasattr(r, "id"):
+                row_dict["id"] = r.id
+            if hasattr(r, "period"):
+                row_dict["period"] = r.period
+            if hasattr(r, "doc_type"):
+                row_dict["doc_type"] = r.doc_type
+            if hasattr(r, "doc_id"):
+                row_dict["doc_id"] = r.doc_id
+            for d in meta.dimensions:
+                row_dict[d] = getattr(r, d, None)
+            for rn in meta.resources:
+                val = getattr(r, rn, None)
+                row_dict[rn] = val
+            result.append(row_dict)
+        return result
+
+
+def get_latest(
+    db: Database,
+    register_cls: type[Register],
+    on_date: datetime.date | None = None,
+    **dim_filters: Any,
+) -> dict[str, Any] | None:
+    """Получить самую свежую запись регистра сведений (срез последних).
+
+    Пример:
+        rate = get_latest(db, CurrencyRate, currency="USD")
+    """
+    records = get_records(
+        db,
+        register_cls,
+        on_date=on_date,
+        order_by="id",
+        desc=True,
+        limit=1,
+        **dim_filters,
+    )
+    return records[0] if records else None
+
+
+# 1C alias for get_latest
+get_slice_last = get_latest
+
+
+def set_record(
+    db: Database,
+    register_cls: type[Register],
+    dimensions: dict[str, Any] | None = None,
+    resources: dict[str, Any] | None = None,
+    period: datetime.date | None = None,
+    doc_id: int | None = None,
+    doc_type: str | None = None,
+    is_income: bool = True,
+) -> None:
+    """Быстрая запись единичной записи/движения в регистр."""
+    write_movements(db, [
+        Movement(
+            register=register_cls,
+            period=period,
+            dimensions=dimensions or {},
+            resources=resources or {},
+            is_income=is_income,
+            doc_id=doc_id,
+            doc_type=doc_type,
+        )
+    ])
+

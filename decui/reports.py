@@ -75,8 +75,61 @@ class StringParam(ReportParam):
     """Text filter parameter → QLineEdit."""
 
 
+class IntegerParam(ReportParam):
+    """Integer filter parameter → QSpinBox."""
+
+    def __init__(
+        self,
+        display_name: str,
+        *,
+        required: bool = False,
+        default: int = 0,
+        min_value: int = -999999999,
+        max_value: int = 999999999,
+    ) -> None:
+        super().__init__(display_name, required=required)
+        self.default = default
+        self.min_value = min_value
+        self.max_value = max_value
+
+
+NumberParam = IntegerParam
+
+
+class DecimalParam(ReportParam):
+    """Decimal filter parameter → QDoubleSpinBox."""
+
+    def __init__(
+        self,
+        display_name: str,
+        *,
+        required: bool = False,
+        default: float = 0.0,
+        precision: int = 15,
+        scale: int = 2,
+    ) -> None:
+        super().__init__(display_name, required=required)
+        self.default = default
+        self.precision = precision
+        self.scale = scale
+
+
+class BooleanParam(ReportParam):
+    """Boolean filter parameter → QCheckBox."""
+
+    def __init__(
+        self,
+        display_name: str,
+        *,
+        default: bool = False,
+    ) -> None:
+        super().__init__(display_name, required=False)
+        self.default = default
+
+
 class DateParam(ReportParam):
     """Date filter parameter → QDateEdit."""
+
 
     def __init__(
         self,
@@ -163,6 +216,10 @@ class Report:
         raise NotImplementedError(
             f"{type(self).__name__} must implement execute()"
         )
+
+
+# Universal alias for Report
+QueryReport = Report
 
 
 # ── @report decorator ──────────────────────────────────────────────

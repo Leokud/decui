@@ -62,6 +62,12 @@ def tab_part(cls: type) -> TablePart:
     return TablePart(cls.__name__, fields, verbose_name)
 
 
+# Universal aliases for TablePart and @tab_part
+LineItems = TablePart
+line_items = tab_part
+child_table = tab_part
+
+
 # ── Entity metadata ────────────────────────────────────────────────
 
 class Metadata:
@@ -213,13 +219,20 @@ class Entity(metaclass=EntityMeta):
 
 
 class Catalog(Entity):
+    """Base class for Master Data / Catalogs (Products, Customers, etc.)."""
     _entity_type: str = "catalog"
+
+
+# Universal aliases for Catalog
+MasterData = Catalog
+Lookup = Catalog
 
 
 import datetime as _dt
 
 
 class Document(Entity):
+    """Base class for Business Transactions / Documents (Invoices, Orders, etc.)."""
     _entity_type: str = "document"
     date = DateTimeField("Дата",
         default=lambda: _dt.datetime.now().replace(second=0, microsecond=0),
@@ -227,23 +240,53 @@ class Document(Entity):
     number = StringField("Номер", default="")
     posted = BooleanField("Проведён", default=False, read_only=True)
 
+    # ── Жизненный цикл / проведение ──
+
+    def post(self) -> None:
+        """Пометить документ как проведённый / согласованный."""
+        self._data["posted"] = True
+
+    def unpost(self) -> None:
+        """Снять проведение / вернуть в черновик."""
+        self._data["posted"] = False
+
+    def submit(self) -> None:
+        """Universal alias for post()."""
+        self.post()
+
+    def cancel(self) -> None:
+        """Universal alias for unpost()."""
+        self.unpost()
+
+    @property
+    def is_posted(self) -> bool:
+        """Проверен / проведён ли документ."""
+        return bool(self._data.get("posted", False))
+
     # ── Движения по регистрам (переопределяется в наследнике) ──
+
+    def get_ledger_entries(self) -> list:
+        """Universal alias: return list of movements / ledger entries on post."""
+        return []
 
     def get_movements(self) -> list:
         """Вернуть список Movement для записи при проведении.
-        Переопределяется в наследнике документа."""
-        return []
+        Переопределяется в наследнике документа (или get_ledger_entries)."""
+        entries = self.get_ledger_entries()
+        return entries if entries else []
 
     def write_movements(self, db: Database) -> None:
         from .movement import write_movements
-        mv_list = self._attach_doc_info(self.get_movements())
+        movements = self.get_movements() or self.get_ledger_entries()
+        mv_list = self._attach_doc_info(movements)
         if mv_list:
             write_movements(db, mv_list)
 
     def clear_movements(self, db: Database) -> None:
         from .movement import clear_movements
         seen = set()
-        for mv in self.get_movements():
+        movements = self.get_movements() or self.get_ledger_entries()
+        for mv in movements:
             key = id(mv.register)
             if key not in seen:
                 seen.add(key)
@@ -263,3 +306,8 @@ class Document(Entity):
         if seq:
             from .sequence import check_sequence as _cs
             _cs(db, self)
+
+
+# Universal alias for Document
+Transaction = Document
+

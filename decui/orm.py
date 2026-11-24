@@ -110,13 +110,28 @@ class Database:
                     h.update(f"{fname}:{type(ffield).__name__}:{ffield.field_type}".encode())
         return h.hexdigest()[:12]
 
+    def _save_schema_hash(self) -> None:
+        try:
+            from sqlalchemy import text as sa_text
+            with self._engine.connect() as conn:
+                conn.execute(sa_text("CREATE TABLE IF NOT EXISTS _erp_config (key TEXT PRIMARY KEY, value TEXT)"))
+                conn.execute(
+                    sa_text("INSERT OR REPLACE INTO _erp_config (key, value) VALUES ('schema_hash', :h)"),
+                    {"h": self._schema_hash()},
+                )
+                conn.commit()
+        except Exception:
+            pass
+
     def _auto_upgrade(self) -> None:
         """Drop and recreate tables if entity schema changed."""
         try:
             from sqlalchemy import inspect as sa_inspect
             inspector = sa_inspect(self._engine)
             existing = inspector.get_table_names()
-            if not existing:
+            user_tables = [t for t in existing if not t.startswith("_erp_")]
+            if not user_tables:
+                self._save_schema_hash()
                 return  # fresh DB — no upgrade needed
             # Check schema version
             from sqlalchemy import text as sa_text
@@ -137,19 +152,8 @@ class Database:
     def _reset_tables(self) -> None:
         """Drop all user tables and recreate."""
         Base.metadata.drop_all(self._engine)
-        for cls in get_all_entities():
-            cls._meta.orm_model = None
-        try:
-            from sqlalchemy import text as sa_text
-            with self._engine.connect() as conn:
-                conn.execute(sa_text("CREATE TABLE IF NOT EXISTS _erp_config (key TEXT PRIMARY KEY, value TEXT)"))
-                conn.execute(
-                    sa_text("INSERT OR REPLACE INTO _erp_config (key, value) VALUES ('schema_hash', :h)"),
-                    {"h": self._schema_hash()},
-                )
-                conn.commit()
-        except Exception:
-            pass
+        self._save_schema_hash()
+
 
     # ------------------------------------------------------------------
     # Model generation
@@ -157,11 +161,14 @@ class Database:
 
     def _init_models(self) -> None:
         for entity_class in get_all_entities():
-            self._create_model(entity_class)
+            if entity_class._meta.orm_model is None:
+                self._create_model(entity_class)
             for tp_name, tp in entity_class._meta.table_parts.items():
-                self._create_tp_model(entity_class, tp_name, tp)
+                if tp.orm_model is None:
+                    self._create_tp_model(entity_class, tp_name, tp)
         create_register_models(self._engine, Base)
         Base.metadata.create_all(self._engine)
+
 
     def _create_model(self, entity_class: type) -> type:
         table_name = self._table_name(entity_class)

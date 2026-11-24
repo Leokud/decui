@@ -66,12 +66,20 @@ User class (Product(Catalog)) → EntityMeta.__new__() → Metadata(fields, comm
 
 ### Imports
 ```python
-from decui import catalog, document, command, tab_part, report, accumulation, information
-from decui import Catalog, Document, Report
+# Standard / Universal ERP style:
+from decui import ERPApplication, Database
+from decui import master_data, transaction, action, line_items, ledger, history_register, report
+from decui import MasterData, Transaction, Report, QueryReport
 from decui import String, Integer, Decimal as D, Ref, Date, DateTime, Time, Choice, Boolean
-from decui import Column, DateParam, RefParam
-from decui import Movement, Dimension, RefDimension, Resource, get_balance
+from decui import Column, DateParam, RefParam, StringParam, IntegerParam, DecimalParam
+from decui import LedgerEntry, Dimension, RefDimension, Metric, get_ledger_balance, get_records, get_latest, set_record
+
+# 1C style (100% backward compatible):
+from decui import catalog, document, command, tab_part, accumulation, information
+from decui import Catalog, Document
+from decui import Movement, Resource, get_balance
 ```
+
 
 ### Entity definition order
 ```python
@@ -147,23 +155,16 @@ python build_exe.py   # → dist/ERP/ERP.exe
 ## Testing
 
 ```bash
+# Run full automated test suite (pytest)
+QT_QPA_PLATFORM=offscreen uv run pytest -v
+
+# Type checking (Pyrefly)
+uv run pyrefly check decui
+
 # Import test (no display needed)
 $env:QT_QPA_PLATFORM='offscreen'; python -c "from decui import *"
-
-# Full integration
-python -c "
-import sys, pathlib; sys.path.insert(0, '.')
-from decimal import Decimal
-from PySide6.QtWidgets import QApplication; app = QApplication([])
-from decui import catalog, Catalog, String, Decimal as D
-@catalog
-class X(Catalog): name=String('N'); price=D('P')
-from decui.orm import Database
-db = Database(':memory:')
-x = X(name='t', price=Decimal('10'))
-db.save(x); assert db.get(X, x._id).name == 't'
-print('OK')"
 ```
+
 
 ## Key Architectural Decisions
 

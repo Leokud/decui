@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDateEdit,
+    QDoubleSpinBox,
     QFormLayout,
     QHBoxLayout,
     QHeaderView,
@@ -18,14 +19,18 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSpinBox,
     QTableView,
     QVBoxLayout,
     QWidget,
 )
 
 from decui.reports import (
+    BooleanParam,
     Column as ColumnMeta,
     DateParam,
+    DecimalParam,
+    IntegerParam,
     RefParam,
     Report,
     ReportParam,
@@ -127,6 +132,24 @@ class ReportView(QScrollArea):
             w.setPlaceholderText(param.display_name)
             return w
 
+        if isinstance(param, IntegerParam):
+            w = QSpinBox()
+            w.setRange(param.min_value, param.max_value)
+            w.setValue(param.default)
+            return w
+
+        if isinstance(param, DecimalParam):
+            w = QDoubleSpinBox()
+            w.setDecimals(param.scale)
+            w.setRange(-999999999.0, 999999999.0)
+            w.setValue(param.default)
+            return w
+
+        if isinstance(param, BooleanParam):
+            w = QCheckBox(param.display_name)
+            w.setChecked(param.default)
+            return w
+
         if isinstance(param, DateParam):
             w = QDateEdit()
             w.setCalendarPopup(True)
@@ -158,6 +181,18 @@ class ReportView(QScrollArea):
             w = cast(QLineEdit, widget)
             return w.text() or None
 
+        if isinstance(param, IntegerParam):
+            w = cast(QSpinBox, widget)
+            return w.value()
+
+        if isinstance(param, DecimalParam):
+            w = cast(QDoubleSpinBox, widget)
+            return w.value()
+
+        if isinstance(param, BooleanParam):
+            w = cast(QCheckBox, widget)
+            return w.isChecked()
+
         if isinstance(param, DateParam):
             w = cast(QDateEdit, widget)
             qd = w.date()
@@ -170,6 +205,7 @@ class ReportView(QScrollArea):
             return w.currentData(Qt.ItemDataRole.UserRole)
 
         return None
+
 
     # ------------------------------------------------------------------
     # Execute

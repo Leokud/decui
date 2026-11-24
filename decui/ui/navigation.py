@@ -54,7 +54,13 @@ class NavigationPanel(QTreeWidget):
             return self._branch_cache[path]
 
         for cls in get_all_entities():
-            sub = getattr(cls, "__subsystem__", None) or cls._meta.section or ""
+            sub = (
+                getattr(cls, "__subsystem__", None)
+                or getattr(cls, "__section__", None)
+                or getattr(cls, "__category__", None)
+                or cls._meta.section
+                or ""
+            )
             if sub:
                 parent = _branch(sub)
             else:
@@ -62,9 +68,15 @@ class NavigationPanel(QTreeWidget):
             self._add_item(cls._meta.verbose_name, cls, parent)
 
         for cls in get_all_reports():
-            sub = getattr(cls, "__subsystem__", None) or ""
+            sub = (
+                getattr(cls, "__subsystem__", None)
+                or getattr(cls, "__section__", None)
+                or getattr(cls, "__category__", None)
+                or ""
+            )
             if sub:
                 parent = _branch(sub)
+
             else:
                 meta = getattr(cls, "_report_meta", None)
                 root_label = "Отчёты"

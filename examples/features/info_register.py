@@ -32,19 +32,14 @@ class RatesReport(Report):
     ]
 
     def execute(self, db, **kw):
-        from sqlalchemy.orm import sessionmaker
-        Session = sessionmaker(bind=db._engine)
-        meta = CurrencyRate._register_meta
-        mc = meta.orm_model
-        if mc is None:
-            return []
-        with Session() as sess:
-            rows = sess.query(mc).all()
+        from decui import get_records
+        rows = get_records(db, CurrencyRate)
         return [
-            {"currency": getattr(r, "currency", "-"),
-             "rate": str(getattr(r, "rate", 0))}
+            {"currency": str(r.get("currency", "-")),
+             "rate": str(r.get("rate", 0))}
             for r in rows
         ]
+
 
 
 def _seed(db):

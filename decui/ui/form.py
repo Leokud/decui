@@ -283,22 +283,32 @@ class AutoForm(QScrollArea):
     # ── Document button handlers (auto-save always) ──
 
     def _run_post(self) -> None:
-        """Execute the 'Провести' command, save entity AS-IS."""
+        """Execute the post/submit action, save entity AS-IS."""
         if self._entity is None:
             return
         self._widgets_to_entity()
         found = False
         for _name, cmd in self._entity_class._meta.commands.items():
-            if cmd.name in ("Провести",) or cmd.func.__name__ in ("post",):
+            if cmd.name in ("Провести", "Submit", "Post") or cmd.func.__name__ in ("post", "submit"):
                 cmd.execute(self._entity)
                 found = True
                 break
         if not found:
             self._entity._data["posted"] = True
         self._save_entity_as_is()
-        if hasattr(self._entity, "get_movements") and self._entity.get_movements():
+        movements = (
+            self._entity.get_movements()
+            if hasattr(self._entity, "get_movements")
+            else (
+                self._entity.get_ledger_entries()
+                if hasattr(self._entity, "get_ledger_entries")
+                else []
+            )
+        )
+        if movements:
             self._entity.clear_movements(self._db)
             self._entity.write_movements(self._db)
+
 
     def _doc_post_and_close(self) -> None:
         self._run_post()
