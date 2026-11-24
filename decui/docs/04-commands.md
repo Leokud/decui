@@ -1,46 +1,115 @@
-# Команды
+# Бизнес-логика, действия (@action) и валидация
 
-Команды — методы, которые становятся кнопками на форме документа.
+В DECUI бизнес-логика описывается декларативно прямо внутри классов сущностей на чистом Python.
 
-## Определение
+---
+
+## 1. Действия и кнопки на форме (@action / @command)
+
+Любой метод сущности, помеченный декоратором `@action("Текст кнопки")` (или `@command`), автоматически становится кнопкой в форме редактирования.
+
+### Пример: калькуляция строк и управление статусами
 
 ```python
-@command("Рассчитать")
-def calc(self):
-    total = Decimal("0")
-    for row in self._table_data.get("Items", []):
-        row["amount"] = Decimal(str(row["quantity"])) * row["price"]
-        total += row["amount"]
-    self._data["total"] = total
+from decimal import Decimal
+from decui import transaction, Transaction, String, Decimal as D, Integer, Ref, line_items, action
 
-@command("Провести")
-def post(self):
-    self.calc()
-    self._data["posted"] = True
+@transaction
+class SalesOrder(Transaction):
+    customer = String(required=True)
+    total    = D(scale=2, read_only=True)
+    status   = String(default="Черновик")
 
-@command("Снять проведение")
-def unpost(self):
-    self._data["posted"] = False
+    @line_items
+    class Items:
+        product  = Ref(Product, required=True)
+        quantity = Integer(default=1, min_value=1)
+        price    = D(scale=2)
+        amount   = D(scale=2, read_only=True)
+
+    # 1. Кнопка расчёта сумм
+    @action("Рассчитать суммы")
+    def calculate_totals(self):
+        for row in self.Items:
+            qty = Decimal(str(row.get("quantity") or 0))
+            price = Decimal(str(row.get("price") or 0))
+            row["amount"] = qty * price
+        
+        # Подсчёт общего итога через встроенный метод total()
+        self.total = self.Items.total("amount")
+
+    # 2. Кнопка согласования / проведения
+    @action("Утвердить заказ")
+    def approve(self):
+        self.calculate_totals()
+        self.status = "Согласован"
+        self.post() # стандартный метод проведения документа
 ```
 
-## Как это работает
+### Как это работает:
+1. Пользователь нажимает кнопку на форме.
+2. Фреймворк автоматически считывает все введённые пользователем значения из виджетов в объект.
+3. Выполняется метод действия.
+4. **Объект автоматически сохраняется в базу данных (`db.save`)**.
+5. Форма автоматически обновляет все поля и строки спецификаций на экране.
 
-1. Пользователь нажимает кнопку на форме
-2. Фреймворк копирует данные из виджетов в сущность
-3. Выполняется метод команды
-4. **Документ автоматически сохраняется** в БД
-5. Виджеты на форме обновляются
+---
 
-## Доступные объекты внутри команды
+## 2. Проверка бизнес-правил и валидация
 
-| Выражение | Что даёт |
+Вы можете выполнять валидацию данных прямо внутри методов или переопределив метод проверки. Если условие нарушено, достаточно выбросить исключение или вернуть предупреждение:
+
+```python
+import datetime
+
+class GoalTask(MasterData):
+    name = String(required=True)
+    deadline = DateTime(required=True)
+    is_completed = Boolean(default=False)
+
+    @action("Завершить задачу")
+    def complete_task(self):
+        # Бизнес-проверка: нельзя закрыть задачу, если срок не наступил
+        if self.deadline > datetime.datetime.now() + datetime.timedelta(days=30):
+            raise ValueError("Нельзя досрочно закрывать задачу с дедлайном более 30 дней!")
+
+        self.is_completed = True
+```
+
+---
+
+## 3. Работа с датами и временем в бизнес-логике
+
+DECUI полностью поддерживает работу с модулем стандартной библиотеки `datetime`:
+
+| Дескриптор | Тип Python | Виджет в UI | Описание |
+|---|---|---|---|
+| `Date` | `datetime.date` | `QDateEdit` | Календарная дата со всплывающим календарём |
+| `DateTime` | `datetime.datetime` | `QDateTimeEdit` | Дата и точное время (часы, минуты) |
+| `Time` | `datetime.time` | `QTimeEdit` | Время суток (ЧЧ:ММ) |
+
+### Вычисления со сроками и дедлайнами:
+```python
+import datetime
+
+@action("Продлить на неделю")
+def extend_deadline(self):
+    current = self.deadline or datetime.datetime.now()
+    # Стандартная арифметика дат Python
+    self.deadline = current + datetime.timedelta(days=7)
+```
+
+---
+
+## 4. Доступные свойства и методы внутри сущности
+
+| Свойство / Метод | Описание |
 |---|---|
-| `self._data["name"]` | Значение поля документа |
-| `self._data["name"] = x` | Установить поле документа |
-| `self._table_data["Items"]` | Список строк табличной части |
-| `self._table_data["Items"][0]["amount"]` | Поле первой строки |
-| `self.date`, `self.number` | Поля через __getattr__ (только чтение) |
+| `self.field_name` | Чтение и запись значений полей |
+| `self.Items` | Коллекция строк спецификации (`LineItemsCollection`) |
+| `self.Items.add(...)` | Добавить новую строку в спецификацию |
+| `self.Items.total("amount")` | Сумма по указанной колонке |
+| `self.post()` / `self.unpost()` | Изменение статуса проведения документа |
+| `self.is_posted` | Проверка, проведён ли документ |
+| `self.to_dict()` | Преобразование объекта в стандартный словарь |
 
-## Команды сохраняют документ
-
-После выполнения любой команды фреймворк вызывает `db.save(self._entity)`. Отдельно нажимать «Сохранить» не нужно.

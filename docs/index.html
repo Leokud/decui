@@ -857,6 +857,18 @@ if __name__ == "__main__":
               <td><code>default=datetime.date.today</code></td>
             </tr>
             <tr>
+              <td><code>DateTime("Дедлайн / Момент")</code></td>
+              <td>QDateTimeEdit</td>
+              <td>DATETIME</td>
+              <td><code>default=datetime.datetime.now</code></td>
+            </tr>
+            <tr>
+              <td><code>Time("Время")</code></td>
+              <td>QTimeEdit</td>
+              <td>VARCHAR(5)</td>
+              <td><code>default=datetime.time(9, 0)</code></td>
+            </tr>
+            <tr>
               <td><code>Choice("Дни")</code></td>
               <td>Чекбоксы</td>
               <td>VARCHAR</td>
@@ -948,6 +960,51 @@ class SaleOrder(Transaction):
         <div class="callout tip">
           <div class="callout-title">Автоматический расчет строк в UI</div>
           Если в табличной части используются стандартные имена <code>price</code>, <code>quantity</code> и <code>amount</code>, встроенный виджет таблицы DECUI автоматически умножает количество на цену при вводе прямо в интерфейсе!
+        </div>
+
+        <h2>Как описывать бизнес-логику и проверки (Валидация, @action, Исключения)</h2>
+        <p>Бизнес-логика в DECUI пишется на чистом Python прямо в методах сущности. Достаточно добавить декоратор <code>@action("Текст кнопки")</code>:</p>
+        
+        <div class="code-container">
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+          <pre><code class="language-python">import datetime
+from decui import transaction, Transaction, String, DateTime, action
+
+@transaction
+class TaskOrder(Transaction):
+    title = String("Задача", required=True)
+    deadline = DateTime("Дедлайн", default=datetime.datetime.now)
+    status = String("Статус", default="В работе")
+
+    # 1. Валидация и проверка бизнес-правил
+    @action("Завершить задачу")
+    def complete(self):
+        # Если правило нарушено, вызываем ValueError:
+        # DECUI автоматически перехватит ошибку, отменит сохранение
+        # и покажет красивое диалоговое окно пользователю!
+        if self.status == "Завершена":
+            raise ValueError("Задача уже завершена ранее!")
+            
+        self.status = "Завершена"
+
+    # 2. Арифметика дат и времени в логике
+    @action("Продлить на 3 дня")
+    def extend_deadline(self):
+        current = self.deadline or datetime.datetime.now()
+        # Стандартная работа с datetime и timedelta в Python
+        self.deadline = current + datetime.timedelta(days=3)
+</code></pre>
+        </div>
+
+        <div class="callout info">
+          <div class="callout-title">Жизненный цикл выполнения действия (@action):</div>
+          <ol style="margin-left: 20px; margin-top: 8px;">
+            <li>Пользователь нажимает кнопку на форме.</li>
+            <li>DECUI считывает введённые значения из всех полей и табличных частей в объект <code>self</code>.</li>
+            <li>Выполняется ваш Python-метод. Если возникнет <code>ValueError</code>, сохранение отменяется, а пользователю показывается текст ошибки.</li>
+            <li>При успешном завершении объект <b>автоматически сохраняется в базу данных</b> (<code>db.save(self)</code>).</li>
+            <li>Форма немедленно обновляет экранные виджеты новыми значениями.</li>
+          </ol>
         </div>
 
         <div class="step-footer">
