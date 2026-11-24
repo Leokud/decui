@@ -4,8 +4,13 @@
 [![PySide6](https://img.shields.io/badge/GUI-PySide6%20%28Qt6%29-green.svg)](https://wiki.qt.io/Qt_for_Python)
 [![SQLAlchemy](https://img.shields.io/badge/ORM-SQLAlchemy%202.0%2B-red.svg)](https://www.sqlalchemy.org/)
 [![Tests](https://img.shields.io/badge/Tests-pytest%2016%2F16%20passed-brightgreen.svg)]()
+[![Web Tutorial](https://img.shields.io/badge/Web_Tutorial-GitHub_Pages-blueviolet.svg)](https://leokud.github.io/decui/)
 
 **DECUI** — это легковесный декларативный (metadata-driven) Python-фреймворк для создания настольных учетных и ERP-систем.
+
+> 🌐 **Интерактивный веб-учебник:**  
+> Пройдите пошаговый курс в браузере: **[leokud.github.io/decui](https://leokud.github.io/decui/)**
+
 
 Вы описываете **только структуру данных и бизнес-логику в виде Python-классов** — фреймворк автоматически генерирует:
 - Таблицы базы данных в SQLite и модели SQLAlchemy
@@ -165,6 +170,7 @@ uv run pytest -v
 
 | Документ | Описание |
 |---|---|
+| [**Интерактивный Веб-учебник**](https://leokud.github.io/decui/) | **Пошаговое интерактивное руководство в браузере (GitHub Pages)** |
 | [11-concepts-guide.md](decui/docs/11-concepts-guide.md) | **Концептуальное руководство: архитектура учета простыми словами** |
 | [01-quickstart.md](decui/docs/01-quickstart.md) | Пошаговый старт, установка и первые шаги |
 | [02-entities.md](decui/docs/02-entities.md) | Сущности (Master Data, Transaction), типы полей, валидация |
