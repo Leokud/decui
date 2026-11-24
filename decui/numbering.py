@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import datetime
+import re
+import threading
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Column, Integer, String, create_engine
-from sqlalchemy.orm import Session, declarative_base, sessionmaker
+from sqlalchemy import Column, Integer, String
+from sqlalchemy.orm import declarative_base, sessionmaker
 
 if TYPE_CHECKING:
     from sqlalchemy.engine import Engine
@@ -18,7 +20,7 @@ class _NumberingRow(_Base):
     __tablename__ = "_erp_numbering"
 
     id = Column(Integer, primary_key=True)
-    prefix = Column(String(50), unique=True, nullable=False)
+    prefix = Column(String(80), unique=True, nullable=False)
     counter = Column(Integer, nullable=False, default=0)
 
 
@@ -28,12 +30,13 @@ class NumberingService:
     Supports 1C-style patterns:
       {prefix}  — текстовый префикс (INV, PRD, PAY…)
       {seq}     — номер с ведущими нулями (000001)
-      {year}    — год (2026)
-      {month}   — месяц (05)
+      {year}    — год (2026) — при наличии сбрасывает счётчик раз в год
+      {month}   — месяц (05) — при наличии сбрасывает счётчик раз в месяц
     """
 
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
+        self._lock = threading.Lock()
         _Base.metadata.create_all(engine)
 
     def next_number(
@@ -42,33 +45,36 @@ class NumberingService:
         pattern: str = "{seq:08d}",
         period: datetime.date | None = None,
     ) -> str:
+        eff_date = period or datetime.date.today()
+        counter_key = prefix
+        if "{month}" in pattern:
+            counter_key = f"{prefix}:{eff_date.year:04d}-{eff_date.month:02d}"
+        elif "{year}" in pattern:
+            counter_key = f"{prefix}:{eff_date.year:04d}"
+
         Session = sessionmaker(bind=self._engine)
-        with Session() as session, session.begin():
-            row = (
-                session.query(_NumberingRow)
-                .filter_by(prefix=prefix)
-                .with_for_update()
-                .first()
-            )
-            if row is None:
-                row = _NumberingRow(prefix=prefix, counter=0)
-                session.add(row)
-            row.counter += 1
-            seq = row.counter
+        with self._lock:
+            with Session() as session, session.begin():
+                row = (
+                    session.query(_NumberingRow)
+                    .filter_by(prefix=counter_key)
+                    .first()
+                )
+                if row is None:
+                    row = _NumberingRow(prefix=counter_key, counter=0)
+                    session.add(row)
+                row.counter += 1
+                seq = row.counter
+
         fmt = pattern
-        # Handle {seq:Nd} patterns
-        import re as _re
-        def _fmt_seq(m):
+
+        def _fmt_seq(m: re.Match[str]) -> str:
             width = int(m.group(1)) if m.group(1) else 6
             return f"{seq:0{width}d}"
-        fmt = _re.sub(r"\{seq:(\d+)d\}", _fmt_seq, fmt)
+
+        fmt = re.sub(r"\{seq:(\d+)d\}", _fmt_seq, fmt)
         fmt = fmt.replace("{seq}", f"{seq:06d}")
         fmt = fmt.replace("{prefix}", str(prefix))
-        if period:
-            fmt = fmt.replace("{year}", f"{period.year:04d}")
-            fmt = fmt.replace("{month}", f"{period.month:02d}")
-        else:
-            today = datetime.date.today()
-            fmt = fmt.replace("{year}", f"{today.year:04d}")
-            fmt = fmt.replace("{month}", f"{today.month:02d}")
+        fmt = fmt.replace("{year}", f"{eff_date.year:04d}")
+        fmt = fmt.replace("{month}", f"{eff_date.month:02d}")
         return fmt

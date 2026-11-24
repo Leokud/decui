@@ -1,9 +1,35 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, dataclass_transform
+from typing import TypeVar, dataclass_transform
 
 from .entity import Entity, EntityMeta
-from .fields import Field
+from .fields import (
+    BooleanField,
+    ChoiceField,
+    DateField,
+    DateTimeField,
+    DecimalField,
+    Field,
+    IntegerField,
+    RefField,
+    StringField,
+    TimeField,
+)
+
+TEntity = TypeVar("TEntity", bound=Entity)
+
+_FIELD_SPECIFIERS = (
+    Field,
+    StringField,
+    IntegerField,
+    DecimalField,
+    BooleanField,
+    DateField,
+    DateTimeField,
+    TimeField,
+    ChoiceField,
+    RefField,
+)
 
 _entity_registry: dict[str, type[Entity]] = {}
 _report_registry: dict[str, type] = {}
@@ -11,7 +37,7 @@ _report_registry: dict[str, type] = {}
 
 # ── Entity registry ────────────────────────────────────────────────
 
-def register_entity(cls: type[Entity]) -> type[Entity]:
+def register_entity(cls: type[TEntity]) -> type[TEntity]:
     name = cls._meta.name
     _entity_registry[name] = cls
     return cls
@@ -59,9 +85,20 @@ def clear() -> None:
 
 @dataclass_transform(
     kw_only_default=True,
-    field_specifiers=(Field,),
+    field_specifiers=(
+        Field,
+        StringField,
+        IntegerField,
+        DecimalField,
+        BooleanField,
+        DateField,
+        DateTimeField,
+        TimeField,
+        ChoiceField,
+        RefField,
+    ),
 )
-def catalog(cls: type) -> type:
+def catalog(cls: type[TEntity]) -> type[TEntity]:
     """Register a master data / catalog entity (subclass of ``Catalog`` / ``MasterData``)."""
     if not isinstance(cls, EntityMeta):
         raise TypeError(f"@catalog requires an Entity subclass, got {type(cls)}")
@@ -77,9 +114,20 @@ master_data = catalog
 
 @dataclass_transform(
     kw_only_default=True,
-    field_specifiers=(Field,),
+    field_specifiers=(
+        Field,
+        StringField,
+        IntegerField,
+        DecimalField,
+        BooleanField,
+        DateField,
+        DateTimeField,
+        TimeField,
+        ChoiceField,
+        RefField,
+    ),
 )
-def document(cls: type) -> type:
+def document(cls: type[TEntity]) -> type[TEntity]:
     """Register a transaction / document entity (subclass of ``Document`` / ``Transaction``)."""
     if not isinstance(cls, EntityMeta):
         raise TypeError(f"@document requires an Entity subclass, got {type(cls)}")
@@ -90,4 +138,3 @@ def document(cls: type) -> type:
 
 # Universal alias for @document
 transaction = document
-

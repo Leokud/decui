@@ -1,4 +1,7 @@
-from .app import ERPApplication
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
 from .commands import Action, Command, action, command
 from .entity import (
     Catalog,
@@ -8,6 +11,7 @@ from .entity import (
     LineItemsCollection,
     Lookup,
     MasterData,
+    Metadata,
     TablePart,
     Transaction,
     child_table,
@@ -37,6 +41,7 @@ from .movement import (
     Movement,
     RefDimension,
     Register,
+    RegisterMeta,
     Resource,
     ValueHistory,
     accumulation,
@@ -54,7 +59,6 @@ from .movement import (
     value_history,
     write_movements,
 )
-
 from .orm import Database
 from .registry import (
     catalog,
@@ -65,6 +69,7 @@ from .registry import (
 )
 from .reports import (
     BooleanParam,
+    ChoiceParam,
     Column,
     DateParam,
     DecimalParam,
@@ -73,14 +78,44 @@ from .reports import (
     QueryReport,
     RefParam,
     Report,
+    ReportMeta,
+    ReportParam,
     StringParam,
     report,
 )
-from .reminders import (
-    ReminderDialog,
-    ReminderService,
-    celebrate_goal_completed,
+from .sequence import (
+    SequenceViolationError,
+    check_sequence,
+    current_role,
+    define_role,
+    has_permission,
+    set_role,
 )
+
+if TYPE_CHECKING:
+    from .app import ERPApplication
+    from .reminders import ReminderDialog, ReminderService, celebrate_goal_completed
+    from .ui.chart import BarChart
+
+_LAZY_IMPORTS: dict[str, tuple[str, str]] = {
+    "ERPApplication": ("decui.app", "ERPApplication"),
+    "ReminderService": ("decui.reminders", "ReminderService"),
+    "ReminderDialog": ("decui.reminders", "ReminderDialog"),
+    "celebrate_goal_completed": ("decui.reminders", "celebrate_goal_completed"),
+    "BarChart": ("decui.ui.chart", "BarChart"),
+}
+
+
+def __getattr__(name: str) -> Any:
+    if name in _LAZY_IMPORTS:
+        mod_name, attr_name = _LAZY_IMPORTS[name]
+        import importlib
+        mod = importlib.import_module(mod_name)
+        val = getattr(mod, attr_name)
+        globals()[name] = val
+        return val
+    raise AttributeError(f"module 'decui' has no attribute '{name}'")
+
 
 __all__ = [
     # Application & Database
@@ -89,6 +124,7 @@ __all__ = [
     "ReminderService",
     "ReminderDialog",
     "celebrate_goal_completed",
+    "BarChart",
     # Decorators (standard + aliases)
     "catalog",
     "master_data",
@@ -107,8 +143,9 @@ __all__ = [
     "information",
     "history_register",
     "value_history",
-    # Entity base classes
+    # Entity base classes & metadata
     "Entity",
+    "Metadata",
     "Catalog",
     "MasterData",
     "Lookup",
@@ -132,6 +169,7 @@ __all__ = [
     "Ref",
     # Registers, ledgers and movements
     "Register",
+    "RegisterMeta",
     "Ledger",
     "AccumulationRegister",
     "InformationRegister",
@@ -151,9 +189,18 @@ __all__ = [
     "get_latest",
     "get_slice_last",
     "set_record",
+    # Sequence & Roles
+    "SequenceViolationError",
+    "check_sequence",
+    "define_role",
+    "has_permission",
+    "current_role",
+    "set_role",
     # Reports and parameters
     "Report",
     "QueryReport",
+    "ReportMeta",
+    "ReportParam",
     "Column",
     "StringParam",
     "IntegerParam",
@@ -161,6 +208,6 @@ __all__ = [
     "DecimalParam",
     "BooleanParam",
     "DateParam",
+    "ChoiceParam",
     "RefParam",
 ]
-

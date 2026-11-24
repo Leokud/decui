@@ -32,7 +32,10 @@ from decui import (
 
     # Отчёты и параметры
     report, Report, QueryReport, Column,
-    StringParam, IntegerParam, NumberParam, DecimalParam, BooleanParam, DateParam, RefParam,
+    StringParam, IntegerParam, NumberParam, DecimalParam, BooleanParam, DateParam, ChoiceParam, RefParam,
+
+    # Последовательности и права
+    SequenceViolationError, check_sequence, define_role, has_permission, set_role,
 
     # Напоминания и уведомления
     ReminderService, ReminderDialog, celebrate_goal_completed,
@@ -68,10 +71,10 @@ db = Database("erp.db")
 # Или база данных в памяти (для тестов):
 db = Database.memory()
 
-db.save(entity)              # INSERT (если id is None) или UPDATE + сохранение строк спецификаций
+db.save(entity, validate=False) # INSERT / UPDATE + строки спецификаций + хуки before_save/after_save
 db.get(Class, id)            # Получить объект по первичному ключу со всеми строками спецификаций
 db.list(Class)               # Получить список всех объектов (краткая выгрузка без тяжелых строк)
-db.filter(Class, **kwargs)   # Выборка объектов по значениям полей
+db.filter(Class, order_by=None, limit=None, **kwargs) # Выборка с операторами (__gt, __gte, __lt, __lte, __ne, __in, __contains, __icontains, __isnull)
 db.delete(entity)            # Удалить объект и каскадно удалить строки спецификаций
 db.seed([e1, e2, ...])       # Пакетное сохранение списка объектов
 ```
@@ -173,7 +176,7 @@ class Invoice(Transaction):
 | `Date(name=None)` | Дата (`QDateEdit`) | `required`, `default` |
 | `DateTime(name=None)` | Дата и время (`QDateTimeEdit`) | `required`, `default` |
 | `Time(name=None)` | Время (`QTimeEdit`) | `required`, `default` |
-| `Choice(name=None)` | Множественный выбор (`QGroupBox + QCheckBox`) | `choices=[("CODE", "Label")]`, `separator="|"` |
+| `Choice(name=None)` | Выбор (`QGroupBox+QCheckBox` или `QComboBox` при `multi=False`) | `choices=[("CODE", "Label")]`, `multi`, `separator="|"` |
 | `Ref(Target, name=None)`| Внешний ключ (`QComboBox`) | `representation_field`, `auto_fill`, `required` |
 
 ---

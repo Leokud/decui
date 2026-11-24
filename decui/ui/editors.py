@@ -8,6 +8,7 @@ from PySide6.QtCore import QDate, QDateTime, QTime, Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QCompleter,
     QDateEdit,
     QDateTimeEdit,
     QDoubleSpinBox,
@@ -17,7 +18,6 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QSpinBox,
     QTimeEdit,
-    QVBoxLayout,
     QWidget,
 )
 
@@ -33,6 +33,8 @@ from decui.fields import (
     StringField,
     TimeField,
 )
+
+_NULL_SENTINEL = "—"
 
 
 def create_editor(field: Field, parent: QWidget | None = None) -> QWidget:
@@ -69,11 +71,7 @@ def create_editor(field: Field, parent: QWidget | None = None) -> QWidget:
 
 
 def get_editor_value(widget: Any, field: Field) -> Any:
-    """Read the current value from an editor widget.
-
-    Type: parameter is typed ``Any`` because the concrete widget subclass
-    is determined by *field* at runtime, not by the static type system.
-    """
+    """Read the current value from an editor widget."""
     if isinstance(field, StringField):
         if getattr(field, "multiline", False) or isinstance(widget, QPlainTextEdit):
             w_plain = cast(QPlainTextEdit, widget)
@@ -85,15 +83,19 @@ def get_editor_value(widget: Any, field: Field) -> Any:
 
     if isinstance(field, IntegerField):
         w = cast(QSpinBox, widget)
+        if w.specialValueText() == _NULL_SENTINEL and w.value() == w.minimum():
+            return None
         return w.value()
 
     if isinstance(field, DecimalField):
         w = cast(QDoubleSpinBox, widget)
-        return Decimal(str(w.value()))
+        if w.specialValueText() == _NULL_SENTINEL and w.value() <= w.minimum() + 1e-9:
+            return None
+        return Decimal(f"{w.value():.{field.scale}f}")
 
     if isinstance(field, BooleanField):
-        w = cast(QCheckBox, widget)
-        return w.isChecked()
+        cb = widget if isinstance(widget, QCheckBox) else widget.findChild(QCheckBox)
+        return cb.isChecked() if cb is not None else False
 
     if isinstance(field, DateField):
         w = cast(QDateEdit, widget)
@@ -118,7 +120,9 @@ def get_editor_value(widget: Any, field: Field) -> Any:
         return datetime.time(qt.hour(), qt.minute())
 
     if isinstance(field, ChoiceField):
-        # read checkboxes, join with separator
+        if isinstance(widget, QComboBox):
+            val = widget.currentData(Qt.ItemDataRole.UserRole)
+            return val or None
         if isinstance(widget, QGroupBox):
             selected: list[str] = []
             for cb in widget.findChildren(QCheckBox):
@@ -129,16 +133,22 @@ def get_editor_value(widget: Any, field: Field) -> Any:
 
     if isinstance(field, RefField):
         w = cast(QComboBox, widget)
-        return w.currentData(Qt.ItemDataRole.UserRole) or None
+        if w.isEditable() and not w.currentText().strip():
+            return None
+        data = w.currentData(Qt.ItemDataRole.UserRole)
+        if data is not None:
+            return data
+        if w.isEditable():
+            idx = w.findText(w.currentText())
+            if idx >= 0:
+                return w.itemData(idx, Qt.ItemDataRole.UserRole)
+        return None
 
     raise TypeError(f"No reader for field type: {type(field).__name__}")
 
 
 def set_editor_value(widget: Any, field: Field, value: Any) -> None:
-    """Set the value of an editor widget from a Python value.
-
-    Same typing reasoning as ``get_editor_value``.
-    """
+    """Set the value of an editor widget from a Python value."""
     if isinstance(field, StringField):
         val_str = str(value) if value is not None else ""
         if getattr(field, "multiline", False) or isinstance(widget, QPlainTextEdit):
@@ -151,7 +161,7 @@ def set_editor_value(widget: Any, field: Field, value: Any) -> None:
     elif isinstance(field, IntegerField):
         w = cast(QSpinBox, widget)
         if value is not None:
-            clamped = value
+            clamped = int(value)
             if field.min_value is not None:
                 clamped = max(clamped, field.min_value)
             if field.max_value is not None:
@@ -159,15 +169,16 @@ def set_editor_value(widget: Any, field: Field, value: Any) -> None:
             w.setValue(clamped)
         elif field.default is not None:
             d = field.default() if callable(field.default) else field.default
-            w.setValue(d)
-        else:
+            w.setValue(int(d))
+        elif w.specialValueText() == _NULL_SENTINEL:
             w.setValue(w.minimum())
+        else:
+            w.setValue(max(0, w.minimum()))
 
     elif isinstance(field, DecimalField):
         w = cast(QDoubleSpinBox, widget)
         if value is not None:
-            from decimal import Decimal as PyDec
-            val = value if isinstance(value, PyDec) else PyDec(str(value))
+            val = value if isinstance(value, Decimal) else Decimal(str(value))
             if field.min_value is not None:
                 val = max(val, field.min_value)
             if field.max_value is not None:
@@ -176,16 +187,21 @@ def set_editor_value(widget: Any, field: Field, value: Any) -> None:
         elif field.default is not None:
             d = field.default() if callable(field.default) else field.default
             w.setValue(float(d))
+        elif w.specialValueText() == _NULL_SENTINEL:
+            w.setValue(w.minimum())
         else:
             w.setValue(0.0)
 
     elif isinstance(field, BooleanField):
-        w = cast(QCheckBox, widget)
-        w.setChecked(bool(value) if value is not None else False)
+        cb = widget if isinstance(widget, QCheckBox) else widget.findChild(QCheckBox)
+        if cb is not None:
+            cb.setChecked(bool(value) if value is not None else False)
 
     elif isinstance(field, DateField):
         w = cast(QDateEdit, widget)
-        if isinstance(value, datetime.date):
+        if isinstance(value, datetime.datetime):
+            w.setDate(QDate(value.year, value.month, value.day))
+        elif isinstance(value, datetime.date):
             w.setDate(QDate(value.year, value.month, value.day))
         else:
             w.setDate(QDate.currentDate())
@@ -194,20 +210,26 @@ def set_editor_value(widget: Any, field: Field, value: Any) -> None:
         w = cast(QDateTimeEdit, widget)
         if isinstance(value, datetime.datetime):
             w.setDateTime(value.replace(second=0, microsecond=0))
+        elif isinstance(value, datetime.date):
+            w.setDateTime(datetime.datetime.combine(value, datetime.time(0, 0)))
         else:
             w.setDateTime(datetime.datetime.now().replace(second=0, microsecond=0))
 
     elif isinstance(field, TimeField):
         w = cast(QTimeEdit, widget)
-        if isinstance(value, datetime.time):
-            w.setTime(QTime(value.hour, value.minute))
-        elif value:
-            w.setTime(QTime(9, 0))
+        parsed = field.to_python(value) if isinstance(value, str) and value else value
+        if isinstance(parsed, datetime.time):
+            w.setTime(QTime(parsed.hour, parsed.minute))
+        elif isinstance(parsed, datetime.datetime):
+            w.setTime(QTime(parsed.hour, parsed.minute))
         else:
             w.setTime(QTime(9, 0))
 
     elif isinstance(field, ChoiceField):
-        if isinstance(widget, QGroupBox):
+        if isinstance(widget, QComboBox):
+            idx = widget.findData(value, Qt.ItemDataRole.UserRole)
+            widget.setCurrentIndex(idx if idx >= 0 else 0)
+        elif isinstance(widget, QGroupBox):
             selected = field.to_list(value) if value else []
             for cb in widget.findChildren(QCheckBox):
                 cb.setChecked(cb.property("_choice_value") in selected)
@@ -217,6 +239,8 @@ def set_editor_value(widget: Any, field: Field, value: Any) -> None:
         idx = w.findData(value, Qt.ItemDataRole.UserRole)
         if idx >= 0:
             w.setCurrentIndex(idx)
+        elif value is None:
+            w.setCurrentIndex(0)
 
 
 # -- Concrete editor factories ----------------------------------------
@@ -238,11 +262,18 @@ def _integer_editor(field: IntegerField, parent: QWidget | None = None) -> QSpin
     w = QSpinBox(parent)
     lo = field.min_value if field.min_value is not None else -10**9
     hi = field.max_value if field.max_value is not None else 10**9
-    w.setRange(lo, hi)
+    nullable = not field.required and field.default is None
+    if nullable:
+        w.setRange(lo - 1, hi)
+        w.setSpecialValueText(_NULL_SENTINEL)
+        w.setValue(lo - 1)
+    else:
+        w.setRange(lo, hi)
+        if field.default is not None:
+            w.setValue(field.default() if callable(field.default) else field.default)
+        else:
+            w.setValue(max(0, lo))
     w.setReadOnly(field.read_only)
-    w.setSpecialValueText("")
-    if field.default is not None:
-        w.setValue(field.default() if callable(field.default) else field.default)
     return w
 
 
@@ -251,16 +282,25 @@ def _decimal_editor(
 ) -> QDoubleSpinBox:
     w = QDoubleSpinBox(parent)
     w.setDecimals(field.scale)
-    default_max = 10 ** max(1, field.precision - field.scale)
-    lo = float(field.min_value) if field.min_value is not None else (
-        0.0 if field.default is not None else -default_max
-    )
+    default_max = float(10 ** max(1, field.precision - field.scale))
+    lo = float(field.min_value) if field.min_value is not None else -default_max
     hi = float(field.max_value) if field.max_value is not None else default_max
-    w.setRange(lo, hi)
+    if field.currency:
+        w.setSuffix(f" {field.currency}")
+
+    nullable = not field.required and field.default is None
+    if nullable:
+        step = 10 ** (-field.scale)
+        w.setRange(lo - step, hi)
+        w.setSpecialValueText(_NULL_SENTINEL)
+        w.setValue(lo - step)
+    else:
+        w.setRange(lo, hi)
+        if field.default is not None:
+            w.setValue(float(field.default() if callable(field.default) else field.default))
+        else:
+            w.setValue(max(0.0, lo))
     w.setReadOnly(field.read_only)
-    w.setSpecialValueText("")
-    if field.default is not None:
-        w.setValue(float(field.default() if callable(field.default) else field.default))
     return w
 
 
@@ -301,7 +341,15 @@ def _time_editor(field: TimeField, parent: QWidget | None = None) -> QTimeEdit:
     return w
 
 
-def _choice_editor(field: ChoiceField, parent: QWidget | None = None) -> QGroupBox:
+def _choice_editor(field: ChoiceField, parent: QWidget | None = None) -> QWidget:
+    if not getattr(field, "multi", True):
+        combo = QComboBox(parent)
+        combo.addItem("", None)
+        for value, label in field.choices:
+            combo.addItem(label, value)
+        combo.setEnabled(not field.read_only)
+        return combo
+
     gb = QGroupBox(parent)
     layout = QHBoxLayout(gb)
     layout.setContentsMargins(0, 0, 0, 0)
@@ -317,6 +365,14 @@ def _choice_editor(field: ChoiceField, parent: QWidget | None = None) -> QGroupB
 def _ref_editor(field: RefField, parent: QWidget | None = None) -> QComboBox:
     w = QComboBox(parent)
     w.setEnabled(not field.read_only)
+    if not field.read_only:
+        w.setEditable(True)
+        w.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        completer = QCompleter(w.model(), w)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        w.setCompleter(completer)
     return w
 
 
@@ -332,10 +388,13 @@ def populate_ref_editor(
     combo.addItem("", None)
     for item in items:
         if display_field and hasattr(item, display_field):
-            label = str(getattr(item, display_field))
+            raw = getattr(item, display_field)
+            label = str(raw) if raw is not None else str(item)
         else:
-            label = repr(item)
+            label = str(item)
         combo.addItem(label, item._id)
+    if combo.isEditable() and combo.completer() is not None:
+        combo.completer().setModel(combo.model())
     if current_id is not None:
         idx = combo.findData(current_id, Qt.ItemDataRole.UserRole)
         if idx >= 0:

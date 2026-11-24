@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import html
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -17,7 +23,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from decui.fields import DecimalField, Field, IntegerField, RefField
+from decui.fields import BooleanField, Field, RefField
+from decui.sequence import SequenceViolationError
 
 from .editors import (
     create_editor,
@@ -27,15 +34,15 @@ from .editors import (
 )
 
 if TYPE_CHECKING:
-    from decimal import Decimal
     from decui.entity import Entity
     from decui.orm import Database
 
 
 class AutoForm(QScrollArea):
-    """Auto-generated form — adapts buttons to catalog vs document."""
+    """Auto-generated form — validates fields & line items, tracks dirty state, supports Ref quick-create."""
 
     closed = Signal()
+    data_changed = Signal(str)  # emits short status message
 
     def __init__(
         self,
@@ -50,6 +57,7 @@ class AutoForm(QScrollArea):
         self._widgets: dict[str, Any] = {}
         self._tab_widgets: dict[str, Any] = {}
         self._is_doc = entity_class._meta.is_document
+        self._initial_snapshot: dict[str, Any] | None = None
 
         self.setWidgetResizable(True)
         try:
@@ -63,14 +71,15 @@ class AutoForm(QScrollArea):
         layout = QVBoxLayout(container)
         layout.setContentsMargins(16, 16, 16, 16)
 
-        title = QLabel(f"<b>{self._entity_class._meta.verbose_name}</b>")
+        safe_name = html.escape(self._entity_class._meta.verbose_name)
+        title = QLabel(f"<b>{safe_name}</b>")
         title.setStyleSheet("font-size: 16px;")
         layout.addWidget(title)
 
         # Fields
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         for name, field in self._entity_class._meta.fields.items():
             if not field.visible:
                 continue
@@ -79,7 +88,22 @@ class AutoForm(QScrollArea):
             label_text = field.display_name
             if field.required:
                 label_text += " *"
-            form.addRow(QLabel(label_text + ":"), editor)
+
+            if isinstance(field, RefField) and not field.read_only:
+                row_wrap = QWidget()
+                row_hl = QHBoxLayout(row_wrap)
+                row_hl.setContentsMargins(0, 0, 0, 0)
+                row_hl.addWidget(editor, stretch=1)
+                add_ref_btn = QPushButton("+")
+                add_ref_btn.setFixedWidth(28)
+                add_ref_btn.setToolTip(f"Создать новый «{field.display_name}»")
+                add_ref_btn.clicked.connect(
+                    lambda checked=False, n=name, f=field: self._quick_create_ref(n, f)
+                )
+                row_hl.addWidget(add_ref_btn)
+                form.addRow(QLabel(label_text + ":"), row_wrap)
+            else:
+                form.addRow(QLabel(label_text + ":"), editor)
         layout.addLayout(form)
 
         # Table parts
@@ -94,7 +118,6 @@ class AutoForm(QScrollArea):
         cmd_layout = QHBoxLayout()
         cmd_layout.addStretch()
 
-        # Command buttons (user-defined)
         for cmd_name, cmd in self._entity_class._meta.commands.items():
             btn = QPushButton(cmd.name)
             btn.clicked.connect(
@@ -109,19 +132,30 @@ class AutoForm(QScrollArea):
 
         layout.addLayout(cmd_layout)
 
+        # Connect auto-fill signals once
+        self._connect_auto_fill()
+
+        # Shortcuts
+        QShortcut(
+            QKeySequence("Ctrl+S"),
+            self,
+            self._save_draft if self._is_doc else self._save_catalog,
+        )
+
     def _build_doc_buttons(self, layout: QHBoxLayout) -> None:
-        """Documents: only Провести / Провести и закрыть / Закрыть."""
+        draft_btn = QPushButton("Сохранить")
+        draft_btn.clicked.connect(self._save_draft)
+        layout.addWidget(draft_btn)
 
         post_btn = QPushButton("Провести и закрыть")
         post_btn.clicked.connect(self._doc_post_and_close)
         layout.addWidget(post_btn)
 
         close_btn = QPushButton("Закрыть")
-        close_btn.clicked.connect(self._doc_close)
+        close_btn.clicked.connect(self._request_close)
         layout.addWidget(close_btn)
 
     def _build_catalog_buttons(self, layout: QHBoxLayout) -> None:
-        """Catalogs: Сохранить / Сохранить и закрыть / Закрыть."""
         save_btn = QPushButton("Сохранить")
         save_btn.clicked.connect(self._save_catalog)
         layout.addWidget(save_btn)
@@ -131,8 +165,30 @@ class AutoForm(QScrollArea):
         layout.addWidget(save_close_btn)
 
         close_btn = QPushButton("Закрыть")
-        close_btn.clicked.connect(self.closed.emit)
+        close_btn.clicked.connect(self._request_close)
         layout.addWidget(close_btn)
+
+    # ── Quick create Ref item in modal dialog ──
+
+    def _quick_create_ref(self, field_name: str, field: RefField) -> None:
+        target_cls = field.resolve_target()
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Новый: {target_cls._meta.verbose_name}")
+        dlg.resize(520, 420)
+        v = QVBoxLayout(dlg)
+        sub_form = AutoForm(target_cls, self._db, dlg)
+        sub_form.load_new()
+        sub_form.closed.connect(dlg.accept)
+        v.addWidget(sub_form)
+        dlg.exec()
+        created_id = sub_form.entity._id if sub_form.entity is not None else None
+        self._refresh_ref_editors()
+        if created_id is not None:
+            combo = self._widgets.get(field_name)
+            if isinstance(combo, QComboBox):
+                idx = combo.findData(created_id, Qt.ItemDataRole.UserRole)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
 
     # ── Public API ──
 
@@ -140,29 +196,47 @@ class AutoForm(QScrollArea):
     def entity(self) -> Entity | None:
         return self._entity
 
+    def has_unsaved_changes(self) -> bool:
+        if self._entity is None or self._initial_snapshot is None:
+            return False
+        current = self._capture_current_values()
+        return current != self._initial_snapshot
+
+    def _capture_current_values(self) -> dict[str, Any]:
+        snap: dict[str, Any] = {}
+        for name, widget in self._widgets.items():
+            field = self._entity_class._meta.fields[name]
+            try:
+                snap[name] = get_editor_value(widget, field)
+            except Exception:
+                snap[name] = None
+        for tp_name, tw in self._tab_widgets.items():
+            snap[f"__tp__{tp_name}"] = [dict(r) for r in tw.get_rows()]
+        return snap
+
+    def _mark_clean(self) -> None:
+        self._initial_snapshot = self._capture_current_values()
+
     def load_entity(self, entity: Entity) -> None:
         self._entity = entity
-        self._editing = entity._id is not None
-        self._populate_widgets()
         self._refresh_ref_editors()
+        self._populate_widgets()
+        self._mark_clean()
 
     def load_new(self, defaults: dict[str, Any] | None = None) -> None:
         merged: dict[str, Any] = {}
-        # Apply __defaults__ from entity metadata (compile-time defaults)
         for k, v in self._entity_class._meta.defaults.items():
             val: Any = v(self._db) if callable(v) else v
             if k in self._entity_class._meta.table_parts:
-                # Table part data goes into load_new's kwargs as the table part name
                 merged[k] = val
             elif k in self._entity_class._meta.fields:
                 merged[k] = val
-        # Override with explicit defaults passed to this method
         if defaults:
             merged.update(defaults)
         self._entity = self._entity_class(**merged)
-        self._editing = False
-        self._populate_widgets()
         self._refresh_ref_editors()
+        self._populate_widgets()
+        self._mark_clean()
 
     def load_by_id(self, id: int) -> None:
         entity = self._db.get(self._entity_class, id)
@@ -176,26 +250,25 @@ class AutoForm(QScrollArea):
             return
         for name, widget in self._widgets.items():
             value = self._entity._data.get(name)
+            widget.blockSignals(True)
             set_editor_value(widget, self._entity_class._meta.fields[name], value)
+            widget.blockSignals(False)
         for tp_name, tw in self._tab_widgets.items():
             tw.load_rows(self._entity._table_data.get(tp_name, []))
 
     def _refresh_ref_editors(self) -> None:
         for name, widget in self._widgets.items():
             field = self._entity_class._meta.fields.get(name)
-            if isinstance(field, RefField):
+            if isinstance(field, RefField) and isinstance(widget, QComboBox):
                 target_class = field.resolve_target()
                 items = self._db.list(target_class)
-                rep = field.representation_field
-                populate_ref_editor(widget, items, rep)
-                # Re-apply value from entity data after populate
+                populate_ref_editor(widget, items, field.representation_field)
                 if self._entity is not None:
                     val = self._entity._data.get(name)
                     if val is not None:
                         idx = widget.findData(val, Qt.ItemDataRole.UserRole)
                         if idx >= 0:
                             widget.setCurrentIndex(idx)
-        self._connect_auto_fill()
         for tw in self._tab_widgets.values():
             tw.refresh_refs(self._db)
 
@@ -207,19 +280,15 @@ class AutoForm(QScrollArea):
                 continue
             fill_field_name = field.auto_fill
             fill_widget = self._widgets.get(fill_field_name)
-            if fill_widget is None:
-                continue
             fill_field = self._entity_class._meta.fields.get(fill_field_name)
-            if fill_field is None:
+            if fill_widget is None or fill_field is None:
                 continue
-            try:
+            if isinstance(widget, QComboBox):
                 widget.currentIndexChanged.connect(
                     lambda idx, n=name, f=field, fw=fill_widget, ff=fill_field: (
                         self._on_ref_auto_fill(n, f, fw, ff)
                     )
                 )
-            except Exception:
-                pass
 
     def _on_ref_auto_fill(
         self,
@@ -228,20 +297,22 @@ class AutoForm(QScrollArea):
         fill_widget: QWidget,
         fill_field_def: Field,
     ) -> None:
-        """Auto-fill a field from the referenced entity."""
+        """Auto-fill or clear target field when referenced entity changes."""
         ref_widget = self._widgets.get(ref_name)
         if ref_widget is None:
             return
         ref_id = get_editor_value(ref_widget, ref_field)
         if ref_id is None:
+            set_editor_value(fill_widget, fill_field_def, None)
             return
         target = ref_field.resolve_target()
         entity = self._db.get(target, ref_id)
         if entity is None:
             return
-        val = entity._data.get(ref_field.auto_fill)
-        if val is not None:
-            set_editor_value(fill_widget, fill_field_def, val)
+        if ref_field.auto_fill:
+            val = entity._data.get(ref_field.auto_fill)
+            if val is not None:
+                set_editor_value(fill_widget, fill_field_def, val)
 
     def _widgets_to_entity(self) -> None:
         if self._entity is None:
@@ -250,78 +321,133 @@ class AutoForm(QScrollArea):
             field = self._entity_class._meta.fields[name]
             self._entity._data[name] = get_editor_value(widget, field)
         for tp_name, tw in self._tab_widgets.items():
-            self._entity._table_data[tp_name] = tw.get_rows()
+            rows = tw.get_rows()
+            self._entity._table_data[tp_name] = rows
 
-    # ── Save (shared) ──
+    # ── Validation & Save ──
+
+    def _validate_all(self) -> bool:
+        """Validate header fields, table part rows, and entity custom rules."""
+        if self._entity is None:
+            return False
+        first_bad_widget: QWidget | None = None
+        for name, field in self._entity_class._meta.fields.items():
+            w = self._widgets.get(name)
+            if w is not None:
+                w.setStyleSheet("")
+            errs = field.validate(self._entity._data.get(name))
+            if errs:
+                if w is not None and first_bad_widget is None:
+                    first_bad_widget = w
+                    w.setStyleSheet("border: 1px solid #dc2626;")
+
+        all_errs = self._entity.validate()
+        if all_errs:
+            if first_bad_widget is not None:
+                first_bad_widget.setFocus()
+            QMessageBox.warning(self, "Ошибка заполнения", "\n".join(all_errs))
+            return False
+        return True
 
     def _save(self) -> bool:
         if self._entity is None:
             return False
         self._widgets_to_entity()
-        for name, field in self._entity_class._meta.fields.items():
-            errs = field.validate(self._entity._data.get(name))
-            if errs:
-                QMessageBox.warning(self, "Ошибка заполнения", "\n".join(errs))
-                return False
+        if not self._validate_all():
+            return False
         try:
             self._db.save(self._entity)
+            self._populate_widgets()
+            self._mark_clean()
+            self.data_changed.emit(f"Сохранено: {self._entity}")
             return True
         except Exception as exc:
             QMessageBox.critical(self, "Ошибка", f"Ошибка сохранения: {exc}")
             return False
 
     def _save_entity_as_is(self) -> bool:
-        """Save entity without re-reading widgets (preserves command changes)."""
+        """Save entity without re-reading widgets, validating and surfacing errors cleanly."""
         if self._entity is None:
+            return False
+        if not self._validate_all():
             return False
         try:
             self._db.save(self._entity)
+            self._populate_widgets()
+            self._mark_clean()
             return True
-        except Exception:
+        except Exception as exc:
+            QMessageBox.critical(self, "Ошибка", f"Ошибка сохранения: {exc}")
             return False
 
-    # ── Document button handlers (auto-save always) ──
+    # ── Document & Catalog button handlers ──
 
-    def _run_post(self) -> None:
-        """Execute the post/submit action, save entity AS-IS."""
+    def _save_draft(self) -> None:
+        self._save()
+
+    def _run_post(self) -> bool:
+        """Validate, run post command, check sequence, persist, and write movements."""
         if self._entity is None:
-            return
+            return False
         self._widgets_to_entity()
-        found = False
-        for _name, cmd in self._entity_class._meta.commands.items():
-            if cmd.name in ("Провести", "Submit", "Post") or cmd.func.__name__ in ("post", "submit"):
-                cmd.execute(self._entity)
-                found = True
-                break
-        if not found:
-            self._entity._data["posted"] = True
-        self._save_entity_as_is()
-        movements = (
-            self._entity.get_movements()
-            if hasattr(self._entity, "get_movements")
-            else (
-                self._entity.get_ledger_entries()
-                if hasattr(self._entity, "get_ledger_entries")
-                else []
-            )
-        )
-        if movements:
-            self._entity.clear_movements(self._db)
-            self._entity.write_movements(self._db)
+        if not self._validate_all():
+            return False
 
+        try:
+            if hasattr(self._entity, "check_sequence"):
+                self._entity.check_sequence(self._db)
+
+            found = False
+            for _name, cmd in self._entity_class._meta.commands.items():
+                if cmd.name in ("Провести", "Submit", "Post") or cmd.func.__name__ in ("post", "submit"):
+                    cmd.execute(self._entity)
+                    found = True
+                    break
+            if not found:
+                self._entity._data["posted"] = True
+
+            if not self._save_entity_as_is():
+                return False
+
+            if self._entity._id is not None and hasattr(self._entity, "clear_movements"):
+                self._entity.clear_movements(self._db)
+                if getattr(self._entity, "is_posted", False):
+                    self._entity.write_movements(self._db)
+
+            self.data_changed.emit(f"Проведён: {self._entity}")
+            return True
+        except SequenceViolationError as exc:
+            QMessageBox.warning(self, "Нарушение последовательности", str(exc))
+            return False
+        except Exception as exc:
+            QMessageBox.critical(self, "Ошибка проведения", str(exc))
+            return False
 
     def _doc_post_and_close(self) -> None:
-        self._run_post()
+        if self._run_post():
+            self.closed.emit()
+
+    def _request_close(self) -> None:
+        """Prompt user if form has unsaved edits before closing."""
+        if self.has_unsaved_changes():
+            ans = QMessageBox.question(
+                self,
+                "Несохранённые изменения",
+                "Сохранить изменения перед закрытием?",
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Yes,
+            )
+            if ans == QMessageBox.StandardButton.Cancel:
+                return
+            if ans == QMessageBox.StandardButton.Yes:
+                if not self._save():
+                    return
         self.closed.emit()
 
     def _doc_close(self) -> None:
-        """Read widgets, save, then close."""
-        if self._entity is not None:
-            self._widgets_to_entity()
-            self._save_entity_as_is()
-        self.closed.emit()
-
-    # ── Catalog button handlers ──
+        self._request_close()
 
     def _save_catalog(self) -> None:
         self._save()
@@ -330,7 +456,7 @@ class AutoForm(QScrollArea):
         if self._save():
             self.closed.emit()
 
-    # ── Command handler (for user-defined @command buttons) ──
+    # ── Command handler ──
 
     def _execute_command(self, cmd_name: str) -> None:
         if self._entity is None:
@@ -341,26 +467,33 @@ class AutoForm(QScrollArea):
             return
         try:
             cmd.execute(self._entity)
+            if not self._validate_all():
+                return
             self._db.save(self._entity)
-            # Write register movements after save (entity has _id)
-            if hasattr(self._entity, "get_movements") and self._entity.get_movements():
+
+            if self._entity._id is not None and hasattr(self._entity, "clear_movements"):
                 self._entity.clear_movements(self._db)
-                self._entity.write_movements(self._db)
+                if getattr(self._entity, "is_posted", False):
+                    self._entity.write_movements(self._db)
+
             self._populate_widgets()
+            self._mark_clean()
+            self.data_changed.emit(f"Выполнено «{cmd.name}»")
         except Exception as exc:
             QMessageBox.critical(self, "Ошибка", f"{cmd.name}: {exc}")
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Table part editor — with auto-fill price + auto-calc
+# Table part editor — with auto-fill + auto-calc + centered booleans
 # ═══════════════════════════════════════════════════════════════════════
 
 class _TablePartWidget(QGroupBox):
-    """Editable sub-table with auto-calculation."""
+    """Editable sub-table with auto-calculation and validation."""
 
     _CONVENTION_PRICE = "price"
     _CONVENTION_QTY = "quantity"
     _CONVENTION_AMOUNT = "amount"
+    rows_changed = Signal()
 
     def __init__(
         self,
@@ -372,7 +505,7 @@ class _TablePartWidget(QGroupBox):
         self._tp = table_part
         self._db = database
         self._rows_data: list[dict[str, Any]] = []
-        self._loading = False  # guards against auto-signal during load
+        self._loading = False
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -387,7 +520,7 @@ class _TablePartWidget(QGroupBox):
         hdr = self._table.horizontalHeader()
         hdr.setStretchLastSection(True)
         hdr.setMinimumSectionSize(80)
-        hdr.setSectionResizeMode(QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
 
         layout.addWidget(self._table)
 
@@ -405,7 +538,7 @@ class _TablePartWidget(QGroupBox):
 
     def load_rows(self, rows: list[dict[str, Any]]) -> None:
         self._loading = True
-        self._rows_data = list(rows)
+        self._rows_data = [dict(r) for r in rows]
         self._rebuild_table()
         self._loading = False
 
@@ -421,7 +554,7 @@ class _TablePartWidget(QGroupBox):
                 field = self._tp.fields[name]
                 if isinstance(field, RefField):
                     widget = self._table.cellWidget(row, col)
-                    if isinstance(widget, QWidget):
+                    if isinstance(widget, QComboBox):
                         target_class = field.resolve_target()
                         items = db.list(target_class)
                         populate_ref_editor(widget, items, field.representation_field)
@@ -444,40 +577,51 @@ class _TablePartWidget(QGroupBox):
                 value = row_data.get(name)
                 if value is None:
                     value = field.default() if callable(field.default) else field.default
-                set_editor_value(editor, field, value)
-                if isinstance(field, RefField) and self._db is not None:
+                if isinstance(field, RefField) and self._db is not None and isinstance(editor, QComboBox):
                     target_class = field.resolve_target()
                     items = self._db.list(target_class)
                     populate_ref_editor(editor, items, field.representation_field)
-                    if value is not None:
-                        idx = editor.findData(value, Qt.ItemDataRole.UserRole)
-                        if idx >= 0:
-                            editor.setCurrentIndex(idx)
-                self._table.setCellWidget(row_idx, col_idx, editor)
+                set_editor_value(editor, field, value)
+
+                if isinstance(field, BooleanField) and isinstance(editor, QCheckBox):
+                    wrap = QWidget()
+                    hl = QHBoxLayout(wrap)
+                    hl.setContentsMargins(0, 0, 0, 0)
+                    hl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    hl.addWidget(editor)
+                    self._table.setCellWidget(row_idx, col_idx, wrap)
+                else:
+                    self._table.setCellWidget(row_idx, col_idx, editor)
             self._connect_row_signals(row_idx, col_names)
+        self._table.resizeColumnsToContents()
+        self._table.resizeRowsToContents()
 
     def _connect_row_signals(self, row_idx: int, col_names: list[str]) -> None:
         """Connect auto-fill and auto-calc signals for a table row."""
         editors: dict[str, QWidget] = {}
         for col_idx, name in enumerate(col_names):
-            editors[name] = self._table.cellWidget(row_idx, col_idx)
+            cw = self._table.cellWidget(row_idx, col_idx)
+            if cw is not None:
+                editors[name] = cw
 
-        # Auto-fill price from catalog when product RefField changes
+        # Auto-fill target column from RefField (honoring field.auto_fill or convention price)
         for name, field in self._tp.fields.items():
-            if isinstance(field, RefField) and self._db is not None:
-                price_editor = editors.get(self._CONVENTION_PRICE)
-                if price_editor is None:
-                    continue
-                ref_editor = editors[name]
-                if isinstance(ref_editor, QWidget):
-                    try:
-                        ref_editor.currentIndexChanged.connect(
-                            lambda idx, e=ref_editor, pe=price_editor, f=field: (
-                                self._on_product_changed(e, pe, f)
-                            )
-                        )
-                    except Exception:
-                        pass
+            if not isinstance(field, RefField) or self._db is None:
+                continue
+            ref_editor = editors.get(name)
+            if not isinstance(ref_editor, QComboBox):
+                continue
+
+            target_col = field.auto_fill or (self._CONVENTION_PRICE if self._CONVENTION_PRICE in editors else None)
+            if not target_col or target_col not in editors:
+                continue
+            target_editor = editors[target_col]
+            target_field = self._tp.fields[target_col]
+            ref_editor.currentIndexChanged.connect(
+                lambda idx, e=ref_editor, te=target_editor, tf=target_field, f=field, tn=target_col: (
+                    self._on_ref_row_changed(e, te, tf, f, tn)
+                )
+            )
 
         # Auto-calc amount when quantity or price changes
         qty_editor = editors.get(self._CONVENTION_QTY)
@@ -485,36 +629,34 @@ class _TablePartWidget(QGroupBox):
         amt_editor = editors.get(self._CONVENTION_AMOUNT)
         if qty_editor and price_editor and amt_editor:
             for src in (qty_editor, price_editor):
-                try:
-                    if hasattr(src, "valueChanged"):
-                        src.valueChanged.connect(
-                            lambda val, q=qty_editor, p=price_editor, a=amt_editor: (
-                                self._auto_calc(q, p, a)
-                            )
+                if hasattr(src, "valueChanged"):
+                    src.valueChanged.connect(
+                        lambda val, q=qty_editor, p=price_editor, a=amt_editor: (
+                            self._auto_calc(q, p, a)
                         )
-                except Exception:
-                    pass
+                    )
 
-    def _on_product_changed(
+    def _on_ref_row_changed(
         self,
         combo: QWidget,
-        price_editor: QWidget,
+        target_editor: QWidget,
+        target_field: Field,
         ref_field: RefField,
+        target_col_name: str,
     ) -> None:
-        """Auto-fill price from the selected product."""
         if self._db is None or self._loading:
             return
-        from decimal import Decimal as PyDec
-        prod_id = get_editor_value(combo, ref_field)
-        if prod_id is None:
+        ref_id = get_editor_value(combo, ref_field)
+        if ref_id is None:
             return
         target_class = ref_field.resolve_target()
-        product = self._db.get(target_class, prod_id)
-        if product is None:
+        obj = self._db.get(target_class, ref_id)
+        if obj is None:
             return
-        product_price = getattr(product, self._CONVENTION_PRICE, None)
-        if product_price is not None:
-            set_editor_value(price_editor, self._tp.fields[self._CONVENTION_PRICE], product_price)
+        attr_name = ref_field.auto_fill or self._CONVENTION_PRICE
+        val = getattr(obj, attr_name, None)
+        if val is not None:
+            set_editor_value(target_editor, target_field, val)
 
     def _auto_calc(
         self,
@@ -526,6 +668,7 @@ class _TablePartWidget(QGroupBox):
         if self._loading:
             return
         from decimal import Decimal as PyDec
+
         qty = get_editor_value(qty_editor, self._tp.fields[self._CONVENTION_QTY])
         price = get_editor_value(price_editor, self._tp.fields[self._CONVENTION_PRICE])
         if qty is not None and price is not None:
@@ -554,12 +697,27 @@ class _TablePartWidget(QGroupBox):
         self._loading = True
         self._rebuild_table()
         self._loading = False
+        self.rows_changed.emit()
+
+    def _find_active_row(self) -> int:
+        current = self._table.currentRow()
+        if 0 <= current < len(self._rows_data):
+            return current
+        focus = QApplication.focusWidget()
+        if focus is not None:
+            for r in range(self._table.rowCount()):
+                for c in range(self._table.columnCount()):
+                    cw = self._table.cellWidget(r, c)
+                    if cw is not None and (cw is focus or cw.isAncestorOf(focus)):
+                        return r
+        return -1
 
     def _delete_row(self) -> None:
-        current = self._table.currentRow()
+        current = self._find_active_row()
         if 0 <= current < len(self._rows_data):
             self._read_table()
             del self._rows_data[current]
             self._loading = True
             self._rebuild_table()
             self._loading = False
+            self.rows_changed.emit()

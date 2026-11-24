@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
 
 from .entity import Entity
 
@@ -125,6 +125,8 @@ class Register:
             object.__setattr__(self, name, value)
 
 
+TReg = TypeVar("TReg")
+
 # Universal aliases for Register
 Ledger = Register
 AccumulationRegister = Register
@@ -137,15 +139,9 @@ ValueHistory = Register
 
 @dataclass
 class Movement:
-    """Одна запись движения по регистру (Ledger Entry).
+    """Одна запись движения по регистру (Ledger Entry)."""
 
-    Ресурсы указываются положительными числами.
-    Флаг is_income определяет знак: приход (+), расход (-).
-    doc_id и doc_type позволяют идентифицировать документ-владелец,
-    чтобы при перепроведении удалить только его движения.
-    """
-
-    register: type[Register]
+    register: type[Any]
     period: datetime.date | None = None
     dimensions: dict[str, Any] = field(default_factory=dict)
     resources: dict[str, Any] = field(default_factory=dict)
@@ -158,27 +154,26 @@ class Movement:
 LedgerEntry = Movement
 
 
-
 # ── Регистрация ────────────────────────────────────────────────────
 
-_REGISTRY: dict[str, type[Register]] = {}
+_REGISTRY: dict[str, type[Any]] = {}
 
 
-def register_register(cls: type[Register]) -> type[Register]:
+def register_register(cls: type[TReg]) -> type[TReg]:
     _REGISTRY[cls.__name__] = cls
     return cls
 
 
-def get_all_registers() -> list[type[Register]]:
+def get_all_registers() -> list[type[Any]]:
     return list(_REGISTRY.values())
 
 
 # ── Декоратор регистра ─────────────────────────────────────────────
 
-def accumulation(cls: type) -> type[Register]:
+def accumulation(cls: type[TReg]) -> type[TReg]:
     """Декоратор: регистр накопления (Balance Ledger / остатки и обороты)."""
     dims, ress = _collect_members(cls)
-    cls._register_meta = RegisterMeta(cls.__name__, dims, ress, "accumulation")
+    cls._register_meta = RegisterMeta(cls.__name__, dims, ress, "accumulation")  # type: ignore[attr-defined]
     register_register(cls)
     return cls
 
@@ -188,10 +183,10 @@ ledger = accumulation
 balance_ledger = accumulation
 
 
-def information(cls: type) -> type[Register]:
+def information(cls: type[TReg]) -> type[TReg]:
     """Декоратор: регистр сведений (Value History / периодические значения и срезы)."""
     dims, ress = _collect_members(cls)
-    cls._register_meta = RegisterMeta(cls.__name__, dims, ress, "information")
+    cls._register_meta = RegisterMeta(cls.__name__, dims, ress, "information")  # type: ignore[attr-defined]
     register_register(cls)
     return cls
 
@@ -199,7 +194,6 @@ def information(cls: type) -> type[Register]:
 # Universal aliases for @information
 history_register = information
 value_history = information
-
 
 
 def _collect_members(cls: type) -> tuple[dict[str, Dimension], dict[str, Resource]]:
@@ -224,7 +218,7 @@ def _collect_members(cls: type) -> tuple[dict[str, Dimension], dict[str, Resourc
 
 def create_register_models(engine: Any, base: Any) -> None:
     """Создать SQL-модели для всех зарегистрированных регистров."""
-    from sqlalchemy import Column, Date, Integer, Numeric, String, ForeignKey
+    from sqlalchemy import Boolean, Column, Date, Integer, Numeric, String
 
     for cls in get_all_registers():
         meta = cls._register_meta
@@ -235,16 +229,19 @@ def create_register_models(engine: Any, base: Any) -> None:
             "__tablename__": table_name,
             "__table_args__": {"extend_existing": True},
             "id": Column(Integer, primary_key=True, autoincrement=True),
+            "period": Column(Date, nullable=(meta.register_type != "accumulation"), index=True),
         }
-        if meta.register_type == "accumulation":
-            attrs["period"] = Column(Date, nullable=False)
         for name, dim in meta.dimensions.items():
-            if isinstance(dim, RefDimension):
-                attrs[name] = Column(Integer, nullable=not dim.required)
+            if isinstance(dim, RefDimension) or dim.field_type is int:
+                attrs[name] = Column(Integer, nullable=not dim.required, index=True)
+            elif dim.field_type is datetime.date:
+                attrs[name] = Column(Date, nullable=not dim.required, index=True)
+            elif dim.field_type is bool:
+                attrs[name] = Column(Boolean, nullable=not dim.required, index=True)
             else:
-                attrs[name] = Column(String(255), nullable=not dim.required)
-        attrs["doc_type"] = Column(String(50), nullable=True)
-        attrs["doc_id"] = Column(Integer, nullable=True)
+                attrs[name] = Column(String(255), nullable=not dim.required, index=True)
+        attrs["doc_type"] = Column(String(50), nullable=True, index=True)
+        attrs["doc_id"] = Column(Integer, nullable=True, index=True)
         for name, res in meta.resources.items():
             if res.field_type == Decimal:
                 attrs[name] = Column(Numeric(15, 2), nullable=not res.required)
@@ -266,12 +263,22 @@ def _reg_table_name(name: str) -> str:
     return "reg_" + "".join(parts)
 
 
+def _norm_dim_val(val: Any) -> Any:
+    if isinstance(val, Entity):
+        return val._id
+    if hasattr(val, "_id"):
+        return val._id
+    return val
+
+
 # ── Работа с движениями ───────────────────────────────────────────
 
 def write_movements(db: Database, movements: list[Movement]) -> None:
     """Записать движения в регистры (расход — отрицательные числа)."""
     from decimal import Decimal as _D
     from sqlalchemy.orm import sessionmaker
+
+    db._check_ready()
     Session = sessionmaker(bind=db._engine)
     with Session() as session:
         for mv in movements:
@@ -280,27 +287,50 @@ def write_movements(db: Database, movements: list[Movement]) -> None:
             if model_class is None:
                 continue
             row = model_class()
-            if meta.register_type == "accumulation" and mv.period:
-                row.period = mv.period
+            eff_period = mv.period
+            if eff_period is None:
+                eff_period = datetime.date.today()
+            elif isinstance(eff_period, datetime.datetime):
+                eff_period = eff_period.date()
+            row.period = eff_period
+
             if mv.doc_type:
                 row.doc_type = mv.doc_type
             if mv.doc_id is not None:
                 row.doc_id = mv.doc_id
             for k, v in mv.dimensions.items():
-                setattr(row, k, v)
+                if not hasattr(row, k):
+                    raise ValueError(f"Измерение '{k}' не найдено в регистре {meta.name}")
+                setattr(row, k, _norm_dim_val(v))
             sign = 1 if mv.is_income else -1
             for k, v in mv.resources.items():
-                val = v * sign if isinstance(v, _D) else (float(v) * sign)
-                setattr(row, k, val)
+                if not hasattr(row, k):
+                    raise ValueError(f"Ресурс '{k}' не найден в регистре {meta.name}")
+                res_meta = meta.resources.get(k)
+                if res_meta and res_meta.field_type == Decimal:
+                    dec_val = v if isinstance(v, _D) else _D(str(v))
+                    setattr(row, k, dec_val * sign)
+                elif isinstance(v, _D):
+                    setattr(row, k, v * sign)
+                elif isinstance(v, (int, float)):
+                    setattr(row, k, v * sign)
+                else:
+                    setattr(row, k, v)
             session.add(row)
         session.commit()
 
 
-def clear_movements(db: Database, register_cls: type[Register],
-                    doc_id: int | None = None,
-                    doc_type: str | None = None) -> None:
+def clear_movements(
+    db: Database,
+    register_cls: type[Any],
+    doc_id: int | None = None,
+    doc_type: str | None = None,
+) -> None:
     """Очистить движения регистра по документу."""
+    if doc_id is None and not doc_type:
+        return  # Guard against wiping an entire register accidentally
     from sqlalchemy.orm import sessionmaker
+
     Session = sessionmaker(bind=db._engine)
     meta = register_cls._register_meta
     model_class = meta.orm_model
@@ -316,13 +346,17 @@ def clear_movements(db: Database, register_cls: type[Register],
         session.commit()
 
 
-def get_balance(db: Database, register_cls: type[Register],
-                on_date: datetime.date | None = None,
-                group_by: list[str] | None = None,
-                **dim_filters: Any) -> list[dict[str, Any]]:
+def get_balance(
+    db: Database,
+    register_cls: type[Any],
+    on_date: datetime.date | None = None,
+    group_by: list[str] | None = None,
+    **dim_filters: Any,
+) -> list[dict[str, Any]]:
     """Получить остатки/обороты по регистру накопления."""
     from sqlalchemy import func as sa_func
     from sqlalchemy.orm import sessionmaker
+
     Session = sessionmaker(bind=db._engine)
     meta = register_cls._register_meta
     model_class = meta.orm_model
@@ -331,9 +365,10 @@ def get_balance(db: Database, register_cls: type[Register],
     with Session() as session:
         q = session.query(model_class)
         if on_date:
-            q = q.filter(model_class.period <= on_date)
+            eff_date = on_date.date() if isinstance(on_date, datetime.datetime) else on_date
+            q = q.filter(model_class.period <= eff_date)
         for k, v in dim_filters.items():
-            q = q.filter(getattr(model_class, k) == v)
+            q = q.filter(getattr(model_class, k) == _norm_dim_val(v))
         res_columns = [sa_func.sum(getattr(model_class, r)) for r in meta.resources]
         if group_by:
             group_cols = [getattr(model_class, g) for g in group_by]
@@ -342,21 +377,23 @@ def get_balance(db: Database, register_cls: type[Register],
             q = q.with_entities(*res_columns)
         rows = q.all()
         result: list[dict[str, Any]] = []
+        res_items = list(meta.resources.items())
         for row in rows:
+            entry: dict[str, Any] = {}
+            offset = 0
             if group_by:
-                entry: dict = {}
                 for i, g in enumerate(group_by):
                     entry[g] = row[i]
-                for i, rn in enumerate(meta.resources):
-                    val = row[len(group_by) + i]
-                    entry[rn] = float(val) if val is not None else 0
-                result.append(entry)
-            else:
-                entry = {}
-                for i, rn in enumerate(meta.resources):
-                    val = row[i]
-                    entry[rn] = float(val) if val is not None else 0
-                result.append(entry)
+                offset = len(group_by)
+            for i, (rn, res_def) in enumerate(res_items):
+                val = row[offset + i]
+                if val is None:
+                    entry[rn] = Decimal("0.00") if res_def.field_type == Decimal else 0
+                elif res_def.field_type == Decimal:
+                    entry[rn] = val if isinstance(val, Decimal) else Decimal(str(val))
+                else:
+                    entry[rn] = float(val)
+            result.append(entry)
     return result
 
 
@@ -366,19 +403,16 @@ get_ledger_balance = get_balance
 
 def get_records(
     db: Database,
-    register_cls: type[Register],
+    register_cls: type[Any],
     on_date: datetime.date | None = None,
     order_by: str | None = None,
     desc: bool = False,
     limit: int | None = None,
     **dim_filters: Any,
 ) -> list[dict[str, Any]]:
-    """Получить сырые записи регистра с фильтрацией (для регистров сведений и логов).
-
-    Пример:
-        rates = get_records(db, CurrencyRate, currency="USD")
-    """
+    """Получить сырые записи регистра с фильтрацией (для регистров сведений и логов)."""
     from sqlalchemy.orm import sessionmaker
+
     Session = sessionmaker(bind=db._engine)
     meta = register_cls._register_meta
     model_class = meta.orm_model
@@ -387,13 +421,21 @@ def get_records(
     with Session() as session:
         q = session.query(model_class)
         if on_date and hasattr(model_class, "period"):
-            q = q.filter(model_class.period <= on_date)
+            eff_date = on_date.date() if isinstance(on_date, datetime.datetime) else on_date
+            q = q.filter(model_class.period <= eff_date)
         for k, v in dim_filters.items():
             if hasattr(model_class, k):
-                q = q.filter(getattr(model_class, k) == v)
+                q = q.filter(getattr(model_class, k) == _norm_dim_val(v))
         if order_by and hasattr(model_class, order_by):
             col = getattr(model_class, order_by)
             q = q.order_by(col.desc() if desc else col.asc())
+        elif hasattr(model_class, "period") and hasattr(model_class, "id"):
+            pcol = getattr(model_class, "period")
+            icol = getattr(model_class, "id")
+            if desc:
+                q = q.order_by(pcol.desc(), icol.desc())
+            else:
+                q = q.order_by(pcol.asc(), icol.asc())
         elif hasattr(model_class, "id"):
             col = getattr(model_class, "id")
             q = q.order_by(col.desc() if desc else col.asc())
@@ -422,20 +464,16 @@ def get_records(
 
 def get_latest(
     db: Database,
-    register_cls: type[Register],
+    register_cls: type[Any],
     on_date: datetime.date | None = None,
     **dim_filters: Any,
 ) -> dict[str, Any] | None:
-    """Получить самую свежую запись регистра сведений (срез последних).
-
-    Пример:
-        rate = get_latest(db, CurrencyRate, currency="USD")
-    """
+    """Получить самую свежую запись регистра сведений (срез последних по дате и ID)."""
     records = get_records(
         db,
         register_cls,
         on_date=on_date,
-        order_by="id",
+        order_by=None,
         desc=True,
         limit=1,
         **dim_filters,
@@ -449,7 +487,7 @@ get_slice_last = get_latest
 
 def set_record(
     db: Database,
-    register_cls: type[Register],
+    register_cls: type[Any],
     dimensions: dict[str, Any] | None = None,
     resources: dict[str, Any] | None = None,
     period: datetime.date | None = None,
@@ -469,4 +507,3 @@ def set_record(
             doc_type=doc_type,
         )
     ])
-

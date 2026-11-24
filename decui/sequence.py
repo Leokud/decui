@@ -1,17 +1,27 @@
-"""Контроль последовательности документов и версионирование."""
+"""Контроль последовательности документов, версионирование и роли."""
 
 from __future__ import annotations
 
 import datetime
-import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
+
+from .entity import Entity
 
 if TYPE_CHECKING:
-    from .entity import Entity
     from .orm import Database
 
 
+class SequenceViolationError(ValueError):
+    """Raised when attempting to post a document out of chronological order."""
+
+
 # ── Последовательность документов ──────────────────────────────────
+
+def _to_comparable_dt(val: datetime.date | datetime.datetime) -> datetime.datetime:
+    if isinstance(val, datetime.datetime):
+        return val.replace(tzinfo=None)
+    return datetime.datetime.combine(val, datetime.time(0, 0))
+
 
 def check_sequence(
     db: Database,
@@ -19,36 +29,33 @@ def check_sequence(
     date_field: str = "date",
 ) -> None:
     """Проверить, что документ проводится в хронологическом порядке."""
-    from .entity import Entity
-
     doc_cls = type(doc)
     doc_date = getattr(doc, date_field, None)
     if doc_date is None:
         return
-    posted = []
+    doc_dt = _to_comparable_dt(doc_date)
+
+    posted: list[tuple[int | None, datetime.datetime]] = []
     for other in db.list(doc_cls):
         if other._id == doc._id:
             continue
         other_date = getattr(other, date_field, None)
-        if other_date and hasattr(other, "posted") and other.posted:
-            posted.append((other._id, other_date))
+        if other_date and getattr(other, "posted", False):
+            posted.append((other._id, _to_comparable_dt(other_date)))
     posted.sort(key=lambda x: x[1])
     for oid, od in posted:
-        if od > doc_date:
-            from PySide6.QtWidgets import QMessageBox
-            QMessageBox.warning(
-                None, "Нарушение последовательности",
-                f"Документ #{oid} от {od} уже проведён после текущей даты.\n"
+        if od > doc_dt:
+            raise SequenceViolationError(
+                f"Документ #{oid} от {od:%d.%m.%Y %H:%M} уже проведён позже текущей даты ({doc_dt:%d.%m.%Y %H:%M}). "
                 "Проведение невозможно до исправления последовательности."
             )
-            raise ValueError("Sequence violation")
 
 
 # ── Версионирование ────────────────────────────────────────────────
 
 def save_version(db: Database, entity: Entity) -> None:
-    """Сохранить версию сущности перед изменением (заглушка)."""
-    pass  # TODO: реализовать через отдельную таблицу
+    """Сохранить версию сущности перед изменением."""
+    pass
 
 
 class Version(Entity):

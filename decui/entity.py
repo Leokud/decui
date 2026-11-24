@@ -1,20 +1,137 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, ClassVar, TypeVar, dataclass_transform
+import copy
+import datetime as _dt
+import inspect
+from types import UnionType
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    Self,
+    TypeVar,
+    Union,
+    dataclass_transform,
+    get_args,
+    get_origin,
+    overload,
+)
 
-from .commands import get_command_meta, Command
-from .fields import BooleanField, DateTimeField, Field, StringField
+from .commands import Command, get_command_meta
+from .fields import (
+    BooleanField,
+    ChoiceField,
+    DateField,
+    DateTimeField,
+    DecimalField,
+    Field,
+    IntegerField,
+    RefField,
+    StringField,
+    TimeField,
+)
 
 if TYPE_CHECKING:
     from .orm import Database
 
 TEntity = TypeVar("TEntity", bound="Entity")
 
+_FIELD_SPECIFIERS = (
+    Field,
+    StringField,
+    IntegerField,
+    DecimalField,
+    BooleanField,
+    DateField,
+    DateTimeField,
+    TimeField,
+    ChoiceField,
+    RefField,
+)
+
+
+# ── Type-annotation inference helper ─────────────────────────────────
+
+def _parse_annotation_string(raw: str) -> tuple[Any, bool]:
+    """Parse common stringified annotations when eval_str is unavailable."""
+    s = raw.strip()
+    required = True
+    if s.startswith("ClassVar[") or s == "ClassVar":
+        return None, False
+    if s.endswith("| None"):
+        s = s[:-6].strip()
+        required = False
+    elif s.startswith("None | "):
+        s = s[7:].strip()
+        required = False
+    elif s.startswith("Optional[") and s.endswith("]"):
+        s = s[9:-1].strip()
+        required = False
+    return s, required
+
+
+def _infer_field_from_annotation(
+    name: str,
+    ann_type: Any,
+    default_val: Any = None,
+) -> Field | None:
+    """Infer a Field descriptor from Python type annotations (e.g. name: str, age: int = 18)."""
+    from decimal import Decimal
+
+    required = True
+    if isinstance(ann_type, str):
+        parsed, required = _parse_annotation_string(ann_type)
+        if parsed is None:
+            return None
+        ann_type = parsed
+    else:
+        origin = get_origin(ann_type)
+        if origin is ClassVar:
+            return None
+        args = get_args(ann_type)
+        if origin is UnionType or origin is Union:
+            non_none_args = [a for a in args if a is not type(None)]
+            if len(non_none_args) == 1:
+                ann_type = non_none_args[0]
+                required = False
+
+    has_default = default_val is not None
+    req = required and not has_default
+
+    if ann_type is str or ann_type == "str":
+        return StringField(required=req, default=default_val)
+    if ann_type is int or ann_type == "int":
+        return IntegerField(required=req, default=default_val)
+    if ann_type is float or ann_type is Decimal or ann_type in ("float", "Decimal"):
+        return DecimalField(required=req, default=default_val)
+    if ann_type is bool or ann_type == "bool":
+        return BooleanField(default=default_val if default_val is not None else False)
+    if ann_type is _dt.date or ann_type in ("datetime.date", "date", "_dt.date"):
+        return DateField(required=req, default=default_val)
+    if ann_type is _dt.datetime or ann_type in ("datetime.datetime", "datetime", "_dt.datetime"):
+        return DateTimeField(required=req, default=default_val)
+    if ann_type is _dt.time or ann_type in ("datetime.time", "time", "_dt.time"):
+        return TimeField(required=req, default=default_val)
+    if isinstance(ann_type, type) and issubclass(ann_type, Entity):
+        return RefField(ann_type, required=req, default=default_val)
+    return None
+
+
+def _get_class_annotations(cls: type) -> dict[str, Any]:
+    """Read annotations safely across Python 3.12-3.14 (including postponed strings)."""
+    try:
+        return inspect.get_annotations(cls, eval_str=True)
+    except Exception:
+        try:
+            return inspect.get_annotations(cls, eval_str=False)
+        except Exception:
+            return dict(getattr(cls, "__annotations__", {}) or {})
+
 
 # ── Table part ─────────────────────────────────────────────────────
 
 class TablePart:
-    """Metadata container for a table-part (line items within a document)."""
+    """Metadata container & descriptor for a table-part (line items within a document)."""
 
     def __init__(
         self,
@@ -27,6 +144,29 @@ class TablePart:
         self.fields = fields
         self.orm_model: type | None = None
         self.table_name: str = ""
+
+    def clone(self) -> TablePart:
+        cloned_fields = {k: copy.copy(v) for k, v in self.fields.items()}
+        return TablePart(self.name, cloned_fields, self.verbose_name)
+
+    @overload
+    def __get__(self, instance: None, owner: Any) -> Self: ...
+
+    @overload
+    def __get__(self, instance: object, owner: Any = None) -> LineItemsCollection: ...
+
+    def __get__(self, instance: object | None, owner: Any = None) -> Any:
+        if instance is None:
+            return self
+        table_data = getattr(instance, "_table_data", {})
+        items = table_data.get(self.name)
+        if items is None:
+            items = LineItemsCollection([], parent=instance, tp_meta=self)
+            table_data[self.name] = items
+        elif not isinstance(items, LineItemsCollection):
+            items = LineItemsCollection(items, parent=instance, tp_meta=self)
+            table_data[self.name] = items
+        return items
 
 
 class LineItemsCollection(list):
@@ -42,30 +182,36 @@ class LineItemsCollection(list):
         self,
         items: list[dict[str, Any]] | None = None,
         *,
-        parent: Entity | None = None,
+        parent: Any = None,
         tp_meta: TablePart | None = None,
     ) -> None:
-        super().__init__(items or [])
+        super().__init__()
         self._parent = parent
         self._tp_meta = tp_meta
+        for item in items or []:
+            self.append(item)
 
-    def add(self, **kwargs: Any) -> dict[str, Any]:
-        """Add a new line item row using keyword arguments."""
+    def _normalize_row(self, raw: dict[str, Any]) -> dict[str, Any]:
         row: dict[str, Any] = {}
         if self._tp_meta is not None:
             for fname, field in self._tp_meta.fields.items():
                 default = field.default() if callable(field.default) else field.default
-                val = kwargs.get(fname, default)
+                val = raw.get(fname, default)
                 if val is not None:
-                    try:
-                        val = field.to_python(val)
-                    except Exception:
-                        pass
+                    val = field.to_python(val)
                 row[fname] = val
-        for k, v in kwargs.items():
+        for k, v in raw.items():
             if k not in row:
                 row[k] = v
-        self.append(row)
+        return row
+
+    def append(self, item: dict[str, Any]) -> None:  # type: ignore[override]
+        super().append(self._normalize_row(item))
+
+    def add(self, **kwargs: Any) -> dict[str, Any]:
+        """Add a new line item row using keyword arguments."""
+        row = self._normalize_row(kwargs)
+        super().append(row)
         return row
 
     def total(self, field: str = "amount") -> Any:
@@ -82,36 +228,44 @@ _TAB_MARKER = "__erp_tab_part__"
 
 
 def tab_part(cls: type) -> TablePart:
-    """Decorator: transforms a nested class into a ``TablePart`` descriptor.
-
-    Usage inside a ``@document`` class::
-
-        @document
-        class Invoice(Document):
-            number = String("Номер")
-
-            @tab_part
-            class Items:
-                product = Ref(Product, "Товар")
-                quantity = Integer("Кол-во")
-                price = Decimal("Цена")
-                amount = Decimal("Сумма", read_only=True)
-    """
+    """Decorator: transforms a nested class into a ``TablePart`` descriptor."""
     fields: dict[str, Field] = {}
     verbose_name: str | None = None
+    defaults_map: dict[str, Any] = {}
+
     for key, value in cls.__dict__.items():
         if isinstance(value, Field):
-            value.name = key
-            if not value.display_name:
-                value.display_name = key.replace("_", " ").capitalize()
-            fields[key] = value
+            f_copy = copy.copy(value)
+            f_copy.name = key
+            if not f_copy.display_name:
+                f_copy.display_name = key.replace("_", " ").capitalize()
+            fields[key] = f_copy
         elif key == "__verbose_name__":
             verbose_name = value
+        elif not key.startswith("_") and not inspect.isfunction(value) and not isinstance(
+            value, (classmethod, staticmethod, property)
+        ):
+            defaults_map[key] = value
+
+    for key, ann_type in _get_class_annotations(cls).items():
+        if key.startswith("_") or key in fields:
+            continue
+        f_inferred = _infer_field_from_annotation(key, ann_type, defaults_map.get(key))
+        if f_inferred is not None:
+            f_inferred.name = key
+            if not f_inferred.display_name:
+                f_inferred.display_name = key.replace("_", " ").capitalize()
+            fields[key] = f_inferred
+
     for base in cls.__bases__:
         base_fields = getattr(base, _TAB_MARKER, None)
-        if base_fields is not None:
+        if isinstance(base_fields, dict):
             for k, v in base_fields.items():
-                fields.setdefault(k, v)
+                fields.setdefault(k, copy.copy(v))
+        elif isinstance(base, TablePart):
+            for k, v in base.fields.items():
+                fields.setdefault(k, copy.copy(v))
+
     return TablePart(cls.__name__, fields, verbose_name)
 
 
@@ -157,54 +311,20 @@ class Metadata:
         return self.entity_type == "document"
 
 
-def _infer_field_from_annotation(name: str, ann_type: Any, default_val: Any = None) -> Field | None:
-    """Infer a Field descriptor from Python type annotations (e.g. name: str, age: int = 18)."""
-    from types import UnionType
-    from typing import Union
-    import datetime as _dt
-    from decimal import Decimal
-    from .fields import (
+@dataclass_transform(
+    kw_only_default=True,
+    field_specifiers=(
+        Field,
+        StringField,
+        IntegerField,
+        DecimalField,
         BooleanField,
         DateField,
         DateTimeField,
-        DecimalField,
-        IntegerField,
-        RefField,
-        StringField,
         TimeField,
-    )
-
-    required = True
-    origin = getattr(ann_type, "__origin__", None)
-    args = getattr(ann_type, "__args__", ())
-    if origin is UnionType or origin is Union:
-        non_none_args = [a for a in args if a is not type(None)]
-        if len(non_none_args) == 1:
-            ann_type = non_none_args[0]
-            required = False
-
-    if ann_type is str or ann_type == "str":
-        return StringField(required=required and default_val is None, default=default_val)
-    if ann_type is int or ann_type == "int":
-        return IntegerField(required=required and default_val is None, default=default_val if default_val is not None else 0)
-    if ann_type is float or ann_type is Decimal or ann_type in ("float", "Decimal"):
-        return DecimalField(required=required and default_val is None, default=default_val if default_val is not None else Decimal("0.00"))
-    if ann_type is bool or ann_type == "bool":
-        return BooleanField(default=default_val if default_val is not None else False)
-    if ann_type is _dt.date or ann_type in ("datetime.date", "date"):
-        return DateField(required=required and default_val is None, default=default_val or _dt.date.today)
-    if ann_type is _dt.datetime or ann_type in ("datetime.datetime", "datetime"):
-        return DateTimeField(required=required and default_val is None, default=default_val or _dt.datetime.now)
-    if ann_type is _dt.time or ann_type in ("datetime.time", "time"):
-        return TimeField(required=required and default_val is None, default=default_val or _dt.time(9, 0))
-    if isinstance(ann_type, type) and issubclass(ann_type, Entity):
-        return RefField(ann_type, required=required and default_val is None)
-    return None
-
-
-@dataclass_transform(
-    kw_only_default=True,
-    field_specifiers=(Field,),
+        ChoiceField,
+        RefField,
+    ),
 )
 class EntityMeta(type):
     """Metaclass that processes entity class bodies."""
@@ -239,26 +359,30 @@ class EntityMeta(type):
             base_meta: Metadata | None = base.__dict__.get("_meta")
             if base_meta:
                 for k, v in base_meta.fields.items():
-                    fields.setdefault(k, v)
+                    fields.setdefault(k, copy.copy(v))
                 for k, v in base_meta.commands.items():
                     commands.setdefault(k, v)
                 for k, v in base_meta.table_parts.items():
-                    table_parts.setdefault(k, v)
+                    table_parts.setdefault(k, v.clone())
 
         cls = super().__new__(mcs, name, bases, namespace)
 
         # Process type annotations for fields defined with type hints (e.g. name: str, age: int = 18)
-        import inspect
-        try:
-            annotations = inspect.get_annotations(cls)
-        except Exception:
-            annotations = getattr(cls, "__annotations__", {}) or {}
-
-        for key, ann_type in annotations.items():
-            if key.startswith("_") or key in fields or key in table_parts or key in commands:
+        for key, ann_type in _get_class_annotations(cls).items():
+            if (
+                key.startswith("_")
+                or key == "id"
+                or key in fields
+                or key in table_parts
+                or key in commands
+            ):
                 continue
             default_val = getattr(cls, key, None)
-            if isinstance(default_val, (classmethod, staticmethod, property)) or callable(default_val):
+            if (
+                isinstance(default_val, (classmethod, staticmethod, property))
+                or inspect.isfunction(default_val)
+                or inspect.ismethod(default_val)
+            ):
                 continue
             field_obj = _infer_field_from_annotation(key, ann_type, default_val)
             if field_obj is not None:
@@ -270,21 +394,24 @@ class EntityMeta(type):
                     delattr(cls, key)
                 except (AttributeError, TypeError):
                     pass
+
         entity_type = getattr(cls, "_entity_type", "entity")
-        verbose_name: str | None = namespace.pop("__verbose_name__", None)
+        verbose_name: str | None = namespace.get("__verbose_name__")
         if verbose_name is None:
             verbose_name = getattr(cls, "__verbose_name__", None)
-        raw_defaults: dict[str, Any] = namespace.pop("__defaults__", {}) or {}
+        raw_defaults: dict[str, Any] = namespace.get("__defaults__", {}) or {}
         defaults: dict[str, Any] = {}
         for base in bases:
             bm: Metadata | None = getattr(base, "_meta", None)
             if bm:
                 defaults.update(bm.defaults)
         defaults.update(raw_defaults)
-        section: str | None = namespace.pop("__section__", None)
+        section: str | None = namespace.get("__section__")
         if section is None:
             section = getattr(cls, "__section__", None)
-        cls._meta = Metadata(name, fields, commands, table_parts, entity_type, verbose_name, defaults, section)
+        cls._meta = Metadata(
+            name, fields, commands, table_parts, entity_type, verbose_name, defaults, section
+        )
         return cls
 
     def __getattr__(cls, name: str) -> Any:
@@ -301,25 +428,39 @@ class EntityMeta(type):
 
 @dataclass_transform(
     kw_only_default=True,
-    field_specifiers=(Field,),
+    field_specifiers=(
+        Field,
+        StringField,
+        IntegerField,
+        DecimalField,
+        BooleanField,
+        DateField,
+        DateTimeField,
+        TimeField,
+        ChoiceField,
+        RefField,
+    ),
 )
 class Entity(metaclass=EntityMeta):
     """Base class for all entities."""
 
     _meta: ClassVar[Metadata]
-
-    # Class-level type hints for IDE autocompletion:
-    id: int | None = None
-    _id: int | None = None
+    _id: int | None
     _data: dict[str, Any]
     _table_data: dict[str, Any]
 
+    # Class-level metadata annotations for IDE autocompletion
     __verbose_name__: ClassVar[str | None] = None
     __section__: ClassVar[str | None] = None
     __subsystem__: ClassVar[str | None] = None
     __numbering__: ClassVar[dict[str, Any] | None] = None
     __defaults__: ClassVar[dict[str, Any] | None] = None
     __primary_key__: ClassVar[str] = "id"
+
+    @property
+    def id(self) -> int | None:
+        """Primary key assigned after persisting into database."""
+        return self._id
 
     @classmethod
     def fields(cls) -> dict[str, Field]:
@@ -344,13 +485,11 @@ class Entity(metaclass=EntityMeta):
             default = field.default() if callable(field.default) else field.default
             value = kwargs.pop(name, default)
             if value is not None:
-                try:
-                    value = field.to_python(value)
-                except Exception:
-                    pass
+                value = field.to_python(value)
             self._data[name] = value
         for tp_name, tp in self._meta.table_parts.items():
-            raw_rows = list(kwargs.pop(tp_name, []))
+            tp_val = kwargs.pop(tp_name, None)
+            raw_rows = list(tp_val) if tp_val is not None else []
             self._table_data[tp_name] = LineItemsCollection(raw_rows, parent=self, tp_meta=tp)
         if kwargs:
             raise TypeError(
@@ -380,23 +519,56 @@ class Entity(metaclass=EntityMeta):
         if hasattr(self, "_data") and name in self._data:
             field = self._meta.fields.get(name)
             if field is not None:
-                try:
-                    value = field.to_python(value)
-                except Exception:
-                    pass
+                value = field.to_python(value)
             self._data[name] = value
             return
         if hasattr(self, "_table_data") and name in self._table_data:
             if not isinstance(value, LineItemsCollection):
                 tp = self._meta.table_parts.get(name)
-                value = LineItemsCollection(list(value), parent=self, tp_meta=tp)
+                raw = list(value) if value is not None else []
+                value = LineItemsCollection(raw, parent=self, tp_meta=tp)
             self._table_data[name] = value
             return
         object.__setattr__(self, name, value)
 
-    def save(self, db: Database) -> Entity:
+    # ── Validation & lifecycle hooks ──
+
+    def validate(self) -> list[str]:
+        """Validate all header fields, table part rows, and custom on_validate()."""
+        errors: list[str] = []
+        for name, field in self._meta.fields.items():
+            errors.extend(field.validate(self._data.get(name)))
+        for tp_name, tp in self._meta.table_parts.items():
+            rows = self._table_data.get(tp_name, [])
+            tp_label = tp.verbose_name or tp_name
+            for idx, row in enumerate(rows, start=1):
+                for fname, fdef in tp.fields.items():
+                    for err in fdef.validate(row.get(fname)):
+                        errors.append(f"{tp_label} (стр. {idx}): {err}")
+        errors.extend(self.on_validate() or [])
+        return errors
+
+    def on_validate(self) -> list[str]:
+        """Override in subclass to run custom cross-field or business validation."""
+        return []
+
+    def before_save(self, db: Database) -> None:
+        """Hook called right before persisting this entity into the database."""
+        pass
+
+    def after_save(self, db: Database) -> None:
+        """Hook called right after persisting this entity into the database."""
+        pass
+
+    def before_delete(self, db: Database) -> None:
+        """Hook called before deleting this entity from the database."""
+        pass
+
+    # ── Active Record ──
+
+    def save(self, db: Database, *, validate: bool = False) -> Self:
         """Save this entity into database (Active Record pattern)."""
-        return db.save(self)
+        return db.save(self, validate=validate)
 
     def delete(self, db: Database) -> None:
         """Delete this entity from database."""
@@ -405,17 +577,17 @@ class Entity(metaclass=EntityMeta):
     @classmethod
     def get(cls: type[TEntity], db: Database, id: int) -> TEntity | None:
         """Fetch an entity instance by ID."""
-        return db.get(cls, id)  # type: ignore
+        return db.get(cls, id)
 
     @classmethod
     def all(cls: type[TEntity], db: Database) -> list[TEntity]:
         """Fetch all entity instances."""
-        return db.list(cls)  # type: ignore
+        return db.list(cls)
 
     @classmethod
     def filter(cls: type[TEntity], db: Database, **kwargs: Any) -> list[TEntity]:
         """Fetch entity instances matching field filter values."""
-        return db.filter(cls, **kwargs)  # type: ignore
+        return db.filter(cls, **kwargs)
 
     def to_dict(self, include_table_parts: bool = True) -> dict[str, Any]:
         """Convert entity data and table parts into a plain dictionary."""
@@ -461,17 +633,16 @@ MasterData = Catalog
 Lookup = Catalog
 
 
-import datetime as _dt
-
-
 class Document(Entity):
     """Base class for Business Transactions / Documents (Invoices, Orders, etc.)."""
     _entity_type: str = "document"
-    date = DateTimeField("Дата",
+    date: _dt.datetime = DateTimeField(
+        "Дата",
         default=lambda: _dt.datetime.now().replace(second=0, microsecond=0),
-        required=True)
-    number = StringField("Номер", default="")
-    posted = BooleanField("Проведён", default=False, read_only=True)
+        required=True,
+    )
+    number: str = StringField("Номер", default="")
+    posted: bool = BooleanField("Проведён", default=False, read_only=True)
 
     # ── Жизненный цикл / проведение ──
 
@@ -516,20 +687,31 @@ class Document(Entity):
             write_movements(db, mv_list)
 
     def clear_movements(self, db: Database) -> None:
-        from .movement import clear_movements
-        seen = set()
+        """Очистить все движения этого документа из задействованных регистров."""
+        if self._id is None:
+            return
+        from .movement import clear_movements, get_all_registers
+
+        seen: set[int] = set()
         movements = self.get_movements() or self.get_ledger_entries()
         for mv in movements:
             key = id(mv.register)
             if key not in seen:
                 seen.add(key)
-                clear_movements(db, mv.register, self._id,
-                                type(self).__name__)
+                clear_movements(db, mv.register, self._id, type(self).__name__)
+        # Also clear across any registered accumulation/information registers if overridden/empty
+        if not seen:
+            doc_type = type(self).__name__
+            for reg in get_all_registers():
+                clear_movements(db, reg, self._id, doc_type)
 
     def _attach_doc_info(self, movements: list) -> list:
         for mv in movements:
             mv.doc_id = self._id
             mv.doc_type = type(self).__name__
+            if mv.period is None and self._data.get("date") is not None:
+                d = self._data["date"]
+                mv.period = d.date() if isinstance(d, _dt.datetime) else d
         return movements
 
     # ── Проверка последовательности ──
@@ -543,4 +725,3 @@ class Document(Entity):
 
 # Universal alias for Document
 Transaction = Document
-

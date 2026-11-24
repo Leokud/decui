@@ -1332,11 +1332,14 @@ layout.addWidget(chart)</code></pre>
 decui new my_erp
 cd my_erp
 
-# Запустить приложение (автоматически находит app.py)
+# Проверить модели, ссылки Ref и схему БД без запуска окна GUI
+decui check
+
+# Запустить приложение (автоматически находит app.py или main.py)
 decui run
 
 # Запустить тесты (автоматически настраивает offscreen-режим для GUI)
-decui test
+decui test -v
 
 # Собрать приложение в автономный бинарник
 decui build</code></pre>
@@ -1673,10 +1676,10 @@ app.database      # Экземпляр Database для прямых запрос
             </tr>
             <tr>
               <td><code>Choice</code></td>
-              <td>Группа QCheckBox</td>
+              <td>Группа QCheckBox / QComboBox</td>
               <td>VARCHAR</td>
-              <td><code>choices=[("VAL", "Label")]</code>, <code>separator="|"</code></td>
-              <td><code>days = Choice("Дни", choices=[("MON", "Пн"), ("TUE", "Вт")])</code></td>
+              <td><code>choices=[("VAL", "Label")]</code>, <code>multi=True|False</code>, <code>separator="|"</code></td>
+              <td><code>priority = Choice("Приоритет", choices=[("H", "Высокий")], multi=False)</code></td>
             </tr>
             <tr>
               <td><code>Ref</code></td>
@@ -1823,6 +1826,7 @@ latest = get_latest(db, PriceHistory, product=1) # -> {"price": 1500.00}</code><
 
         <!-- SUBSECTION 8: REPORTS -->
         <h2>8. Параметрические отчёты (`@report` / `QueryReport`)</h2>
+        <p>Поддерживают автоматический запуск при открытии (<code>auto_run = True</code>), сортировку с закреплением строки «Итого» внизу, <b>экспорт в CSV</b> и переход к записи по двойному клику (<code>_entity_class</code> + <code>_entity_id</code>).</p>
         <table class="table-custom">
           <thead>
             <tr>
@@ -1893,10 +1897,16 @@ item = Product(name="Монитор", price=Decimal("15000.00"))
 item.save(db)
 item.delete(db)
 
-# Класс-методы выборки:
+# Класс-методы выборки и операторы фильтрации:
 item = Product.get(db, 1)            # по ID
 all_items = Product.all(db)          # все записи
-active = Product.filter(db, is_active=True) # фильтрация
+active = Product.filter(db, is_active=True) # точное совпадение
+expensive = Product.filter(db, price__gte=Decimal("1000"), order_by="-price", limit=10)
+by_name = Product.filter(db, name__icontains="монитор") # поиск подстроки
+
+# Жизненные хуки сущности (переопределяются в классе):
+# on_validate(self) -> list[str]
+# before_save(self, db), after_save(self, db), before_delete(self, db)
 
 # Сериализация:
 data = item.to_dict()                # dict со всеми полями и строками
@@ -1928,6 +1938,9 @@ celebrate_goal_completed(message="Поздравляем! Цель успешн�
           <pre><code class="language-bash"># Создание нового проекта из шаблона:
 decui new my_project
 
+# Проверка схемы моделей, Ref-ссылок и БД без запуска GUI:
+decui check
+
 # Запуск приложения:
 decui run main.py
 
@@ -1944,13 +1957,13 @@ python build_exe.py
         </div>
 
         <div class="callout tip">
-          <div class="callout-title">2. Как работает клонирование («Копировать») в списках?</div>
-          Кнопка «Копировать» в ListView автоматически клонирует выбранную запись вместе со всеми строками спецификаций, но <b>сбрасывает id и уникальный номер</b> (<code>number</code> / <code>code</code>), чтобы новая запись получила новый уникальный номер из счётчика автонумерации.
+          <div class="callout-title">2. Живой поиск, быстрое создание Ref (+) и сортировка в списках</div>
+          В формах списков (<code>ListView</code>) доступен живой поиск (<code>Ctrl+F</code>), многотиповая сортировка (числа, даты, суммы), автоматическая подстановка имён из <code>Ref</code> вместо ID и подтверждение удаления. В формах редактирования (<code>AutoForm</code>) у ссылочных полей есть поиск и кнопка <code>+</code> для быстрого создания нового элемента справочника без закрытия текущей формы.
         </div>
 
         <div class="callout tip">
           <div class="callout-title">3. Как обновляется схема базы данных при добавлении новых полей?</div>
-          DECUI вычисляет криптографический хэш структуры всех моделей. При изменении полей или таблиц фреймворк выполняет автоматическую чистую миграцию, поэтому вам никогда не придётся писать ручные SQL-скрипты миграций.
+          DECUI отслеживает хэш схемы и выполняет <b>неразрушающий апгрейд</b> (<code>ALTER TABLE ADD COLUMN</code>) при добавлении новых полей — существующие данные пользователей сохраняются!
         </div>
 
         <div class="step-footer">
