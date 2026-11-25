@@ -682,13 +682,13 @@
       </div>
 
       <nav class="nav-list">
-        <a class="nav-item active" onclick="goToStep(0)">
+        <a class="nav-item" href="#step-0" onclick="goToStep(0)">
           <div class="nav-step-badge">0</div>
           <span>Введение и концепции</span>
         </a>
-        <a class="nav-item" onclick="goToStep(1)">
+        <a class="nav-item active" href="#step-1" onclick="goToStep(1)">
           <div class="nav-step-badge">1</div>
-          <span>Быстрый старт (10 строк)</span>
+          <span>Приложение за 20 минут</span>
         </a>
         <a class="nav-item" onclick="goToStep(2)">
           <div class="nav-step-badge">2</div>
@@ -724,16 +724,14 @@
         </a>
       </nav>
 
-      <div style="margin-top: auto; padding: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; font-size: 0.8rem; color: var(--text-muted);">
-        💡 <b>Совет:</b> Код из каждого шага можно копировать и запускать напрямую через Python 3.12+.
-      </div>
+
     </aside>
 
     <!-- Main Content Area -->
     <main>
 
       <!-- STEP 0 -->
-      <section class="step-section active" id="step-0">
+      <section class="step-section" id="step-0">
         <div class="step-tag">Вводный модуль</div>
         <h1>Концепции и архитектура DECUI</h1>
         <p>Добро пожаловать в пошаговый интерактивный учебник по <b>DECUI</b> — декларативному Python-фреймворку для разработки настольных бизнес-приложений и ERP-систем.</p>
@@ -825,78 +823,108 @@
       </section>
 
       <!-- STEP 1 -->
-      <section class="step-section" id="step-1">
-        <div class="step-tag">Шаг 1 из 8</div>
-        <h1>Быстрый старт за 10 строк</h1>
-        <p>Начнем с минимального рабочего приложения. Создадим учет справочника товаров с формой ввода, списком и локальной базой данных.</p>
+      <section class="step-section active" id="step-1">
+        <h1>Первое приложение за 20 минут</h1>
+        <p>Соберём настольное приложение для целей и задач. Достаточно знать Python. DECUI сам создаст окна, списки и локальное хранилище.</p>
 
-        <h2>1. Установка окружения</h2>
+        <h2>1. Установите DECUI · 3 минуты</h2>
+        <p>Из корня репозитория в окружении Python 3.12 или новее выполните команду. Установятся и зависимости фреймворка.</p>
         <div class="code-container">
           <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
-          <pre><code class="language-bash">pip install PySide6 sqlalchemy pyinstaller
-# Либо через быстрый пакетный менеджер uv:
-uv pip install PySide6 sqlalchemy pyinstaller</code></pre>
+          <pre><code class="language-bash">python -m pip install -e .</code></pre>
         </div>
 
-        <h2>2. Минимальный код приложения (app.py)</h2>
+        <h2>2. Запустите «Мои цели» · 5 минут</h2>
+        <p>Скопируйте весь блок в <code>app.py</code> и выполните <code>python app.py</code>.</p>
+        <div class="code-container">
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+          <pre><code class="language-python">from datetime import datetime, timedelta
+from typing import ClassVar
 
-        <div class="tabs-wrapper">
-          <div class="tabs-header">
-            <button class="tab-btn active" onclick="switchTab(this, 's1-universal')">Универсальный Python/ERP стиль</button>
-            <button class="tab-btn" onclick="switchTab(this, 's1-1c')">Стиль 1С</button>
-          </div>
-          <div class="tab-content active" id="s1-universal">
-            <div class="code-container">
-              <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
-              <pre><code class="language-python">from decui import ERPApplication, MasterData, String, Decimal as D, master_data
+from decui import (
+    Boolean, Catalog, Column, Database, DateTime, ERPApplication,
+    Ref, Report, String, catalog, report,
+)
 
-@master_data
-class Product(MasterData):
-    __verbose_name__ = "Товары"
-    __section__      = "Склад"
 
-    name  = String("Наименование", required=True)
-    price = D("Цена", precision=10, scale=2, min_value=0)
+def next_week() -&gt; datetime:
+    return datetime.now().replace(second=0, microsecond=0) + timedelta(days=7)
 
-if __name__ == "__main__":
-    app = ERPApplication(title="Учет товаров", db_path="warehouse.db")
-    app.run()</code></pre>
-            </div>
-          </div>
-          <div class="tab-content" id="s1-1c">
-            <div class="code-container">
-              <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
-              <pre><code class="language-python">from decui import ERPApplication, Catalog, String, Decimal as D, catalog
 
 @catalog
-class Product(Catalog):
-    __verbose_name__ = "Товары"
-    __section__      = "Склад"
+class Goal(Catalog):
+    __verbose_name__ = &quot;Цели&quot;
+    name: String = String(&quot;Название&quot;, required=True)
+    deadline: DateTime = DateTime(&quot;Срок&quot;, required=True, default=next_week)
 
-    name  = String("Наименование", required=True)
-    price = D("Цена", precision=10, scale=2, required=True)
 
-if __name__ == "__main__":
-    app = ERPApplication(title="Учет товаров", db_path="warehouse.db")
-    app.run()</code></pre>
-            </div>
-          </div>
+@catalog
+class Task(Catalog):
+    __verbose_name__ = &quot;Задачи&quot;
+    name: String = String(&quot;Название&quot;, required=True)
+    goal: Ref = Ref(Goal, &quot;Цель&quot;, required=True, related_list=&quot;Задачи цели&quot;)
+    description: String = String(&quot;Описание&quot;, multiline=True)
+    deadline: DateTime = DateTime(&quot;Срок&quot;, required=True, default=lambda: next_week() - timedelta(days=6))
+    is_completed: Boolean = Boolean(&quot;Выполнено&quot;, default=False)
+
+    def before_save(self, db: Database) -&gt; None:
+        parent = db.get(Goal, self.goal)
+        if parent is not None and self.deadline &gt; parent.deadline:
+            raise ValueError(&quot;Срок задачи не может быть позже срока цели.&quot;)
+
+
+@report
+class PendingTasks(Report):
+    title = &quot;Открытые задачи&quot;
+    auto_run = True
+    columns: ClassVar[list[Column]] = [
+        Column(&quot;Задача&quot;, &quot;name&quot;, width=0),
+        Column(&quot;Срок&quot;, &quot;deadline&quot;, width=170),
+    ]
+
+    def execute(self, db: Database, **params: object) -&gt; list[dict[str, object]]:
+        return [
+            {&quot;name&quot;: task.name, &quot;deadline&quot;: task.deadline.strftime(&quot;%d.%m.%Y %H:%M&quot;)}
+            for task in db.filter(Task, is_completed=False, order_by=&quot;deadline&quot;)
+        ]
+
+
+if __name__ == &quot;__main__&quot;:
+    app = ERPApplication(title=&quot;Мои цели&quot;, app_id=&quot;my-goals&quot;, start=Goal)
+    app.enable_reminders([Task])
+    raise SystemExit(app.run())</code></pre>
         </div>
+        <p><code>app_id</code> задаёт постоянный каталог приложения в данных пользователя. Оставляйте его прежним, чтобы после перезапуска открывались те же записи. <code>start=Goal</code> открывает список целей сразу.</p>
 
-        <div class="callout tip">
-          <div class="callout-title">🎉 Что сделал фреймворк?</div>
-          Вам не пришлось писать ни строчки UI или SQL:
-          <ol style="margin-top: 8px;">
-            <li>Создал файл SQLite <code>warehouse.db</code> и таблицу <code>product</code>.</li>
-            <li>Собрал главное окно с навигацией слева («Склад → Товары»).</li>
-            <li>Сгенерировал таблицу списка товаров с кнопками «Новый», «Изменить», «Копировать», «Удалить», «Обновить».</li>
-            <li>Сгенерировал диалог ввода с проверкой обязательного наименования и числовым спиннером цены.</li>
-          </ol>
-        </div>
+        <h2>3. Проверьте сценарий · 5 минут</h2>
+        <ol>
+          <li>В списке «Цели» нажмите «Новый», введите название и сохраните карточку.</li>
+          <li>В разделе «Задачи цели» нажмите «Новый». Поле «Цель» заполнится автоматически. Укажите название и срок.</li>
+          <li>Попробуйте поставить задаче срок позже срока цели. При сохранении появится сообщение из <code>before_save</code>.</li>
+          <li>Откройте «Открытые задачи». Отметьте задачу выполненной и сформируйте отчёт снова. Задача исчезнет из отчёта.</li>
+          <li>Создайте задачу со сроком через 30 минут и подождите до следующей проверки напоминаний. Закройте и запустите приложение снова, чтобы проверить сохранение записей.</li>
+        </ol>
+
+        <h2>4. Добавьте своё правило · 7 минут</h2>
+        <p>Добавьте задаче поле <code>priority: Integer = Integer("Приоритет", default=1, min_value=1, max_value=3)</code> и импортируйте <code>Integer</code>. Перезапустите приложение и найдите поле в карточке и списке. Замените порядок отчёта на <code>order_by="-priority"</code>, чтобы сначала показывать важные задачи.</p>
+        <ul>
+          <li><code>Catalog</code> даёт список и карточку. Дескрипторы <code>String</code>, <code>DateTime</code> и <code>Boolean</code> задают типы данных и редакторы.</li>
+          <li><code>Ref(..., related_list="Задачи цели")</code> добавляет в карточку связанный список. С <code>on_delete="CASCADE"</code> удаление цели удалит и её задачи.</li>
+          <li><code>before_save(db)</code> проверяет правила при любом сохранении, в том числе из напоминания. <code>db.get(...)</code> и <code>db.filter(...)</code> читают данные через Python.</li>
+          <li><code>ERPApplication(..., first_run=seed)</code> один раз вызывает функцию <code>seed(db)</code> для начальных данных. Если функция завершится ошибкой, её изменения откатятся.</li>
+        </ul>
+
+        <h2>Как развить пример до «Цель. Код будущего»</h2>
+        <ul>
+          <li><b>Последовательность этапов.</b> В <code>before_save</code> прочитайте задачи цели через <code>db.filter</code>, сравните срок с соседними этапами и проверьте, что предыдущие выполнены.</li>
+          <li><b>Прогресс и статус.</b> Считайте долю выполненных этапов после записи и удаления задачи в <code>after_save</code> и <code>after_delete</code>. Сохраните результат в поле цели с <code>read_only=True</code>. Изменения задачи и цели войдут в одну транзакцию.</li>
+          <li><b>Отчёт по целям.</b> Используйте <code>RefParam</code> для отбора. В <code>execute</code> верните строку с <code>_style="group"</code> для каждой цели, затем строки её этапов со стилями <code>completed</code>, <code>current</code> и <code>future</code>. Чтобы порядок групп сохранялся, задайте <code>sortable=False</code>.</li>
+        </ul>
+        <p>Полный код этих правил и начальные данные есть в <a href="https://github.com/Leokud/decui/blob/master/examples/future_goals.py">примере «Цель. Код будущего»</a>. Из локального репозитория он запускается командой <code>python -m examples.future_goals</code>.</p>
 
         <div class="step-footer">
-          <button class="btn btn-secondary" onclick="goToStep(0)">⬅ Назад</button>
-          <button class="btn btn-primary" onclick="markCompletedAndNext(1)">Далее: Справочники и поля ➔</button>
+          <button class="btn btn-secondary" onclick="goToStep(0)">Как устроен DECUI</button>
+          <button class="btn btn-primary" onclick="markCompletedAndNext(1)">Далее: справочники и поля</button>
         </div>
       </section>
 
@@ -1496,7 +1524,8 @@ from decui import (
           <pre><code class="language-python"># Запуск настольного приложения:
 app = ERPApplication(
     title="Учетная система",      # Заголовок главного окна
-    db_path="app.db",             # Файл SQLite (или ":memory:")
+    app_id="my-app",             # Постоянное локальное хранилище
+    start=Product,               # Первый экран после запуска
     argv=None,                    # Аргументы командной строки sys.argv
 )
 
@@ -1981,7 +2010,7 @@ python build_exe.py
   <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
 
   <script>
-    let currentStep = 0;
+    let currentStep = 1;
     const totalSteps = 10;
     const completedSteps = new Set(JSON.parse(localStorage.getItem('decui_completed_steps') || '[]'));
 
@@ -2078,17 +2107,21 @@ python build_exe.py
       wrapper.querySelector(`#${targetId}`).classList.add('active');
     }
 
-    function copyCode(btn) {
-      const code = btn.nextElementSibling.innerText;
-      navigator.clipboard.writeText(code).then(() => {
-        const orig = btn.innerText;
-        btn.innerText = 'Скопировано!';
-        btn.style.background = 'var(--accent-green)';
-        setTimeout(() => {
-          btn.innerText = orig;
-          btn.style.background = '';
-        }, 1800);
-      });
+    async function copyCode(btn) {
+      const code = btn.nextElementSibling.querySelector('code');
+      try {
+        await navigator.clipboard.writeText(code.textContent);
+        const label = btn.textContent;
+        btn.textContent = 'Скопировано';
+        setTimeout(() => { btn.textContent = label; }, 1800);
+      } catch {
+        const range = document.createRange();
+        range.selectNodeContents(code);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        btn.textContent = 'Нажмите Ctrl+C / ⌘C';
+      }
     }
 
     function toggleTheme() {
@@ -2105,6 +2138,8 @@ python build_exe.py
       document.body.classList.add('light');
     }
     updateProgress();
+    const linkedStep = /^#step-(\d)$/.exec(window.location.hash);
+    if (linkedStep) goToStep(Number(linkedStep[1]));
   </script>
 </body>
 </html>

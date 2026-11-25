@@ -276,11 +276,9 @@ def _norm_dim_val(val: Any) -> Any:
 def write_movements(db: Database, movements: list[Movement]) -> None:
     """Записать движения в регистры (расход — отрицательные числа)."""
     from decimal import Decimal as _D
-    from sqlalchemy.orm import sessionmaker
 
     db._check_ready()
-    Session = sessionmaker(bind=db._engine)
-    with Session() as session:
+    with db.session() as session:
         for mv in movements:
             meta = mv.register._register_meta
             model_class = meta.orm_model
@@ -317,7 +315,6 @@ def write_movements(db: Database, movements: list[Movement]) -> None:
                 else:
                     setattr(row, k, v)
             session.add(row)
-        session.commit()
 
 
 def clear_movements(
@@ -329,21 +326,18 @@ def clear_movements(
     """Очистить движения регистра по документу."""
     if doc_id is None and not doc_type:
         return  # Guard against wiping an entire register accidentally
-    from sqlalchemy.orm import sessionmaker
 
-    Session = sessionmaker(bind=db._engine)
     meta = register_cls._register_meta
     model_class = meta.orm_model
     if model_class is None:
         return
-    with Session() as session:
+    with db.session() as session:
         q = session.query(model_class)
         if doc_id is not None:
             q = q.filter(model_class.doc_id == doc_id)
         if doc_type:
             q = q.filter(model_class.doc_type == doc_type)
         q.delete()
-        session.commit()
 
 
 def get_balance(
@@ -355,14 +349,12 @@ def get_balance(
 ) -> list[dict[str, Any]]:
     """Получить остатки/обороты по регистру накопления."""
     from sqlalchemy import func as sa_func
-    from sqlalchemy.orm import sessionmaker
 
-    Session = sessionmaker(bind=db._engine)
     meta = register_cls._register_meta
     model_class = meta.orm_model
     if model_class is None:
         return []
-    with Session() as session:
+    with db.session() as session:
         q = session.query(model_class)
         if on_date:
             eff_date = on_date.date() if isinstance(on_date, datetime.datetime) else on_date
@@ -411,14 +403,12 @@ def get_records(
     **dim_filters: Any,
 ) -> list[dict[str, Any]]:
     """Получить сырые записи регистра с фильтрацией (для регистров сведений и логов)."""
-    from sqlalchemy.orm import sessionmaker
 
-    Session = sessionmaker(bind=db._engine)
     meta = register_cls._register_meta
     model_class = meta.orm_model
     if model_class is None:
         return []
-    with Session() as session:
+    with db.session() as session:
         q = session.query(model_class)
         if on_date and hasattr(model_class, "period"):
             eff_date = on_date.date() if isinstance(on_date, datetime.datetime) else on_date

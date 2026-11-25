@@ -24,8 +24,10 @@ from PySide6.QtWidgets import (
 )
 
 from decui.fields import BooleanField, Field, RefField
+from decui.registry import get_all_entities
 from decui.sequence import SequenceViolationError
 
+from .listview import ListView
 from .editors import (
     create_editor,
     get_editor_value,
@@ -57,6 +59,8 @@ class AutoForm(QScrollArea):
         self._widgets: dict[str, Any] = {}
         self._tab_widgets: dict[str, Any] = {}
         self._is_doc = entity_class._meta.is_document
+        self._related_views: list[QWidget] = []
+        self._related_id: int | None = None
         self._initial_snapshot: dict[str, Any] | None = None
 
         self.setWidgetResizable(True)
@@ -69,16 +73,20 @@ class AutoForm(QScrollArea):
         container = QWidget()
         self.setWidget(container)
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(16)
 
         safe_name = html.escape(self._entity_class._meta.verbose_name)
         title = QLabel(f"<b>{safe_name}</b>")
-        title.setStyleSheet("font-size: 16px;")
+        title.setProperty("heading", True)
+        title.setWordWrap(True)
         layout.addWidget(title)
 
         # Fields
         form = QFormLayout()
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        form.setVerticalSpacing(10)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         for name, field in self._entity_class._meta.fields.items():
             if not field.visible:
@@ -89,21 +97,27 @@ class AutoForm(QScrollArea):
             if field.required:
                 label_text += " *"
 
+            label = QLabel(label_text + ":")
+            label.setTextFormat(Qt.TextFormat.PlainText)
+            label.setWordWrap(True)
+            label.setBuddy(editor)
+
             if isinstance(field, RefField) and not field.read_only:
                 row_wrap = QWidget()
                 row_hl = QHBoxLayout(row_wrap)
                 row_hl.setContentsMargins(0, 0, 0, 0)
                 row_hl.addWidget(editor, stretch=1)
                 add_ref_btn = QPushButton("+")
-                add_ref_btn.setFixedWidth(28)
+                add_ref_btn.setProperty("compact", True)
+                add_ref_btn.setFixedWidth(36)
                 add_ref_btn.setToolTip(f"Создать новый «{field.display_name}»")
                 add_ref_btn.clicked.connect(
                     lambda checked=False, n=name, f=field: self._quick_create_ref(n, f)
                 )
                 row_hl.addWidget(add_ref_btn)
-                form.addRow(QLabel(label_text + ":"), row_wrap)
+                form.addRow(label, row_wrap)
             else:
-                form.addRow(QLabel(label_text + ":"), editor)
+                form.addRow(label, editor)
         layout.addLayout(form)
 
         # Table parts
@@ -112,6 +126,8 @@ class AutoForm(QScrollArea):
             self._tab_widgets[tp_name] = tw
             layout.addWidget(tw)
 
+        self._related_layout = QVBoxLayout()
+        layout.addLayout(self._related_layout)
         layout.addStretch()
 
         # Buttons
@@ -148,6 +164,7 @@ class AutoForm(QScrollArea):
         layout.addWidget(draft_btn)
 
         post_btn = QPushButton("Провести и закрыть")
+        post_btn.setProperty("primary", True)
         post_btn.clicked.connect(self._doc_post_and_close)
         layout.addWidget(post_btn)
 
@@ -161,6 +178,7 @@ class AutoForm(QScrollArea):
         layout.addWidget(save_btn)
 
         save_close_btn = QPushButton("Сохранить и закрыть")
+        save_close_btn.setProperty("primary", True)
         save_close_btn.clicked.connect(self._catalog_save_and_close)
         layout.addWidget(save_close_btn)
 
@@ -255,6 +273,92 @@ class AutoForm(QScrollArea):
             widget.blockSignals(False)
         for tp_name, tw in self._tab_widgets.items():
             tw.load_rows(self._entity._table_data.get(tp_name, []))
+        self._populate_related_lists()
+
+    def _populate_related_lists(self) -> None:
+        entity = self._entity
+        entity_id = entity._id if entity is not None else None
+        if entity_id == self._related_id:
+            return
+        self._related_id = entity_id
+        for view in self._related_views:
+            self._related_layout.removeWidget(view)
+            view.deleteLater()
+        self._related_views.clear()
+        if entity_id is None:
+            return
+        related_lists = {
+            (target, field): title
+            for title, target, field in getattr(self._entity_class, "__related_lists__", ())
+        }
+        for target in get_all_entities():
+            for ref_field, field_def in target._meta.fields.items():
+                if (
+                    isinstance(field_def, RefField) and field_def.related_list
+                    and field_def.resolve_target() is self._entity_class
+                ):
+                    related_lists.setdefault((target, ref_field), field_def.related_list)
+        for (target, ref_field), title in related_lists.items():
+            group = QGroupBox(title)
+            layout = QVBoxLayout(group)
+            view = ListView(target, self._db, filters={ref_field: entity_id})
+            view.setMinimumHeight(230)
+            view.create_requested.connect(
+                lambda cls, f=ref_field, pk=entity_id: self._open_related_form(cls, defaults={f: pk})
+            )
+            view.edit_requested.connect(lambda item: self._open_related_form(type(item), item))
+            view.copy_requested.connect(lambda item: self._open_related_form(type(item), item, copy=True))
+            view.data_changed.connect(self._reload_parent)
+            layout.addWidget(view)
+            self._related_layout.addWidget(group)
+            self._related_views.append(group)
+
+    def refresh_related_data(self) -> None:
+        """Refresh related records and unchanged fields after an external edit."""
+        self._refresh_ref_editors()
+        for group in self._related_views:
+            view = group.findChild(ListView)
+            if view is not None:
+                view.refresh()
+        self._reload_parent()
+
+    def _reload_parent(self) -> None:
+        if self._entity is None or self._entity._id is None:
+            return
+        updated = self._db.get(self._entity_class, self._entity._id)
+        if updated is not None:
+            for name, widget in self._widgets.items():
+                field = self._entity_class._meta.fields[name]
+                current = get_editor_value(widget, field)
+                if field.read_only or current == (self._initial_snapshot or {}).get(name):
+                    set_editor_value(widget, field, updated._data.get(name))
+                    if self._initial_snapshot is not None:
+                        self._initial_snapshot[name] = get_editor_value(widget, field)
+            self._entity = updated
+
+    def _open_related_form(
+        self, cls: type, item: Entity | None = None, *, defaults: dict[str, Any] | None = None, copy: bool = False
+    ) -> None:
+        try:
+            dialog = QDialog(self)
+            dialog.setWindowTitle(cls._meta.verbose_name)
+            dialog.resize(620, 450)
+            layout = QVBoxLayout(dialog)
+            form = AutoForm(cls, self._db, dialog)
+            if item is None:
+                form.load_new(defaults)
+            else:
+                full = self._db.get(cls, item._id) if item._id is not None else None
+                if full is None:
+                    raise ValueError("Запись была удалена.")
+                form.load_entity(full.copy_for_edit(self._db) if copy else full)
+            form.closed.connect(dialog.accept)
+            layout.addWidget(form)
+            dialog.exec()
+            dialog.deleteLater()
+            self.refresh_related_data()
+        except Exception as exc:
+            QMessageBox.warning(self, "Не удалось открыть форму", str(exc))
 
     def _refresh_ref_editors(self) -> None:
         for name, widget in self._widgets.items():
@@ -319,7 +423,8 @@ class AutoForm(QScrollArea):
             return
         for name, widget in self._widgets.items():
             field = self._entity_class._meta.fields[name]
-            self._entity._data[name] = get_editor_value(widget, field)
+            if not field.read_only:
+                self._entity._data[name] = get_editor_value(widget, field)
         for tp_name, tw in self._tab_widgets.items():
             rows = tw.get_rows()
             self._entity._table_data[tp_name] = rows
@@ -357,6 +462,7 @@ class AutoForm(QScrollArea):
             return False
         try:
             self._db.save(self._entity)
+            self._show_save_message()
             self._populate_widgets()
             self._mark_clean()
             self.data_changed.emit(f"Сохранено: {self._entity}")
@@ -373,12 +479,19 @@ class AutoForm(QScrollArea):
             return False
         try:
             self._db.save(self._entity)
+            self._show_save_message()
             self._populate_widgets()
             self._mark_clean()
             return True
         except Exception as exc:
             QMessageBox.critical(self, "Ошибка", f"Ошибка сохранения: {exc}")
             return False
+
+    def _show_save_message(self) -> None:
+        message = getattr(self._entity, "_save_message", None)
+        if message and self._entity is not None:
+            object.__setattr__(self._entity, "_save_message", None)
+            QMessageBox.information(self, "Запись сохранена", message)
 
     # ── Document & Catalog button handlers ──
 

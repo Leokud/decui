@@ -3,7 +3,7 @@
 [![Python](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/GUI-PySide6%20%28Qt6%29-green.svg)](https://wiki.qt.io/Qt_for_Python)
 [![SQLAlchemy](https://img.shields.io/badge/ORM-SQLAlchemy%202.0%2B-red.svg)](https://www.sqlalchemy.org/)
-[![Tests](https://img.shields.io/badge/Tests-pytest%2030%2F30%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-pytest%2049%2F49%20passed-brightgreen.svg)]()
 [![Web Tutorial](https://img.shields.io/badge/Web_Tutorial-GitHub_Pages-blueviolet.svg)](https://leokud.github.io/decui/)
 
 **DECUI** — это легковесный декларативный (metadata-driven) Python-фреймворк для создания настольных учетных и ERP-систем.
@@ -69,8 +69,7 @@ class Product(MasterData):
     price = D("Цена", precision=10, scale=2, min_value=0)
 
 if __name__ == "__main__":
-    app = ERPApplication(title="Учет товаров", db_path="warehouse.db")
-    app.run()
+    raise SystemExit(ERPApplication(title="Учёт товаров", app_id="warehouse", start=Product).run())
 ```
 
 Запустите:
@@ -78,9 +77,31 @@ if __name__ == "__main__":
 python app.py
 ```
 
-Фреймворк автоматически создаст таблицу SQLite, откроет главное окно, сформирует дерево меню «Склад → Товары», таблицу просмотра со списком и диалоговые окна создания и редактирования товаров.
+Фреймворк автоматически создаст локальную базу SQLite в каталоге данных пользователя, откроет главное окно, сформирует дерево меню «Склад → Товары», таблицу просмотра со списком и диалоговые окна создания и редактирования товаров.
 
 ---
+
+Пошаговый сценарий с целями, задачами и отчётом доступен в [руководстве на 20 минут](docs/index.html#step-1).
+
+## Пример «Цель. Код будущего»
+
+```bash
+python -m examples.future_goals
+```
+
+Пример создаёт пять демонстрационных целей при первом запуске. В карточке
+сохранённой цели можно добавлять и редактировать задачи, проверять их сроки
+и видеть прогресс. Отчёт «Динамика достижения целей» показывает этапы
+активных целей. Напоминания появляются за час до срока, пока приложение
+открыто. База SQLite хранится в локальном каталоге данных пользователя.
+
+Для сборки офлайн-версии выполните на целевой платформе:
+
+```bash
+python -m PyInstaller --onefile --windowed --name FutureGoals --paths . --collect-all sqlalchemy examples/future_goals.py
+```
+
+На Windows результат появится в `dist/FutureGoals.exe`.
 
 ## 🛠 Пример с транзакциями, строками и регистрами
 

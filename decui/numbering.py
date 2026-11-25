@@ -6,7 +6,7 @@ import threading
 from typing import TYPE_CHECKING
 
 from sqlalchemy import Column, Integer, String
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 if TYPE_CHECKING:
     from sqlalchemy.engine import Engine
@@ -44,6 +44,8 @@ class NumberingService:
         prefix: str,
         pattern: str = "{seq:08d}",
         period: datetime.date | None = None,
+        *,
+        session: Session | None = None,
     ) -> str:
         eff_date = period or datetime.date.today()
         counter_key = prefix
@@ -52,19 +54,13 @@ class NumberingService:
         elif "{year}" in pattern:
             counter_key = f"{prefix}:{eff_date.year:04d}"
 
-        Session = sessionmaker(bind=self._engine)
-        with self._lock:
-            with Session() as session, session.begin():
-                row = (
-                    session.query(_NumberingRow)
-                    .filter_by(prefix=counter_key)
-                    .first()
-                )
-                if row is None:
-                    row = _NumberingRow(prefix=counter_key, counter=0)
-                    session.add(row)
-                row.counter += 1
-                seq = row.counter
+        if session is None:
+            factory = sessionmaker(bind=self._engine)
+            with self._lock, factory.begin() as owned_session:
+                owned_session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+                seq = self._increment(owned_session, counter_key)
+        else:
+            seq = self._increment(session, counter_key)
 
         fmt = pattern
 
@@ -78,3 +74,12 @@ class NumberingService:
         fmt = fmt.replace("{year}", f"{eff_date.year:04d}")
         fmt = fmt.replace("{month}", f"{eff_date.month:02d}")
         return fmt
+
+    @staticmethod
+    def _increment(session: Session, counter_key: str) -> int:
+        row = session.query(_NumberingRow).filter_by(prefix=counter_key).first()
+        if row is None:
+            row = _NumberingRow(prefix=counter_key, counter=0)
+            session.add(row)
+        row.counter += 1
+        return row.counter

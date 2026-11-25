@@ -144,7 +144,8 @@ class ReportView(QWidget):
         import html
         safe_title = html.escape(self._report_class._report_meta.title)
         title = QLabel(f"<b>Отчёт: {safe_title}</b>")
-        title.setStyleSheet("font-size: 16px;")
+        title.setProperty("heading", True)
+        title.setWordWrap(True)
         layout.addWidget(title)
 
         # Param form
@@ -152,6 +153,7 @@ class ReportView(QWidget):
         if params:
             form = QFormLayout()
             form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+            form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
             for name, param in params.items():
                 editor = self._create_param_editor(param)
                 self._param_widgets[name] = editor
@@ -171,6 +173,7 @@ class ReportView(QWidget):
         btn_layout.addWidget(self._export_btn)
 
         generate_btn = QPushButton("Сформировать")
+        generate_btn.setProperty("primary", True)
         generate_btn.clicked.connect(self._generate)
         btn_layout.addWidget(generate_btn)
         layout.addLayout(btn_layout)
@@ -185,7 +188,12 @@ class ReportView(QWidget):
         self._table = QTableView()
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setAlternatingRowColors(True)
-        self._table.setSortingEnabled(True)
+        self._table.setSortingEnabled(self._report_class.sortable)
+        self._table.setShowGrid(False)
+        self._table.setWordWrap(False)
+        self._table.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self._table.verticalHeader().setVisible(False)
+        self._table.verticalHeader().setDefaultSectionSize(34)
         self._table.doubleClicked.connect(self._on_double_click)
         self._table.setVisible(False)
         layout.addWidget(self._table, stretch=1)
@@ -315,6 +323,12 @@ class ReportView(QWidget):
     # ------------------------------------------------------------------
     # Execute & Export
     # ------------------------------------------------------------------
+
+    def refresh(self) -> None:
+        """Update reference choices and re-run the displayed report."""
+        self._refresh_ref_params()
+        if self._last_rows or self._report_class.auto_run:
+            self._generate()
 
     def _generate(self) -> None:
         params: dict[str, Any] = {}
@@ -452,9 +466,15 @@ class ReportView(QWidget):
         )
         self._proxy.setSourceModel(src_model)
         self._table.setModel(self._proxy)
+        header = self._table.horizontalHeader()
+        header.setStretchLastSection(all(c.width != 0 for c in columns))
         for i, c in enumerate(columns):
-            if c.width > 0:
-                self._table.setColumnWidth(i, c.width)
+            if c.width == 0:
+                header.setSectionResizeMode(i, QHeaderView.ResizeMode.Stretch)
+            else:
+                header.setSectionResizeMode(i, QHeaderView.ResizeMode.Interactive)
+                if c.width > 0:
+                    self._table.setColumnWidth(i, c.width)
 
     def _export_csv(self) -> None:
         if not self._last_rows:
@@ -515,7 +535,7 @@ class _TableModel(QAbstractTableModel):
         row_idx = index.row()
         col_idx = index.column()
 
-        if role == Qt.ItemDataRole.DisplayRole:
+        if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.ToolTipRole):
             return self._rows[row_idx][col_idx]
 
         if role == Qt.ItemDataRole.UserRole:
@@ -540,7 +560,7 @@ class _TableModel(QAbstractTableModel):
             if 0 <= row_idx < len(self._raw_rows):
                 r = self._raw_rows[row_idx]
                 style = str(r.get("_style", "")).lower()
-                bold = bool(r.get("_bold")) or style in ("current", "active", "bold")
+                bold = bool(r.get("_bold")) or style in ("current", "active", "bold", "group")
                 strike = bool(r.get("_strikeout")) or style in ("completed", "done")
                 if bold or strike:
                     f = QFont()
@@ -549,6 +569,10 @@ class _TableModel(QAbstractTableModel):
                     if strike:
                         f.setStrikeOut(True)
                     return f
+
+        if role == Qt.ItemDataRole.BackgroundRole and row_idx < len(self._raw_rows):
+            if self._raw_rows[row_idx].get("_style") == "group":
+                return QColor("#e3ecfa")
 
         if role == Qt.ItemDataRole.ForegroundRole:
             if not self._is_total_row(index) and 0 <= row_idx < len(self._raw_rows):
@@ -559,6 +583,8 @@ class _TableModel(QAbstractTableModel):
                 style = str(r.get("_style", "")).lower()
                 if style in ("completed", "done"):
                     return QColor(128, 128, 128)
+                if style == "group":
+                    return QColor("#163761")
                 if style in ("current", "active"):
                     return QColor(13, 110, 253)
 

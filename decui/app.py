@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import html
+import re
 import traceback
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Callable
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QStandardPaths, Qt
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -22,6 +24,8 @@ from decui.orm import Database
 from decui.ui.form import AutoForm
 from decui.ui.listview import ListView
 from decui.ui.navigation import NavigationPanel
+from decui.ui.report_view import ReportView
+from decui.ui.theme import DESKTOP_STYLE
 
 if TYPE_CHECKING:
     from decui.entity import Entity
@@ -44,9 +48,14 @@ class ERPApplication:
     def __init__(
         self,
         argv: list[str] | None = None,
-        db_path: str = ":memory:",
+        db_path: str | None = None,
         title: str = "ERP Система",
         window_size: tuple[int, int] = (1200, 800),
+        *,
+        app_id: str | None = None,
+        db_filename: str = "data.sqlite3",
+        start: type | None = None,
+        first_run: Callable[[Database], None] | None = None,
     ) -> None:
         existing = QApplication.instance()
         self._qt_app = existing if isinstance(existing, QApplication) else QApplication(argv if argv is not None else [])
@@ -56,6 +65,17 @@ class ERPApplication:
         entities = [e.__name__ for e in get_all_entities()]
         reports = [r.__name__ for r in get_all_reports()]
 
+        if db_path is None and app_id is not None:
+            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", app_id) is None:
+                raise ValueError("app_id должен содержать латинские буквы, цифры, дефис или подчёркивание")
+            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*\.sqlite3", db_filename) is None:
+                raise ValueError("db_filename должен быть именем файла с расширением .sqlite3")
+            data_dir = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.GenericDataLocation)
+            directory = Path(data_dir) / "DECUI" / app_id
+            directory.mkdir(parents=True, exist_ok=True)
+            db_path = str(directory / db_filename)
+        if db_path is None:
+            db_path = ":memory:"
         self._db = Database(path=db_path)
 
         self._main_window = _MainWindow(self._db, title=title)
@@ -73,6 +93,15 @@ class ERPApplication:
             if self._db._last_error:
                 msg.setDetailedText(self._db._last_error)
             msg.exec()
+        self._startup_ok = self._db._ready
+        if self._startup_ok and first_run is not None:
+            try:
+                self._db.initialize(first_run)
+            except Exception as exc:
+                _show_error(self._main_window, "Ошибка начального заполнения", exc)
+                self._startup_ok = False
+        if self._startup_ok and start is not None:
+            self._main_window._on_navigate(start)
 
     def enable_reminders(
         self,
@@ -83,8 +112,12 @@ class ERPApplication:
         title_field: str = "name",
         notify_before_minutes: int = 60,
         check_interval_ms: int = 30000,
+        eligible: Callable[[Entity], bool] | None = None,
     ) -> Any:
         from decui.reminders import ReminderService
+        if self._reminder_service is not None:
+            self._reminder_service.stop()
+            self._reminder_service.deleteLater()
         svc = ReminderService(
             self._db,
             entity_classes,
@@ -94,6 +127,7 @@ class ERPApplication:
             notify_before_minutes=notify_before_minutes,
             check_interval_ms=check_interval_ms,
             parent=self._main_window,
+            eligible=eligible,
         )
         svc.open_entity_requested.connect(self._main_window._on_edit)
         svc.data_changed.connect(self._main_window._refresh_active_view)
@@ -102,8 +136,9 @@ class ERPApplication:
         return svc
 
     def run(self) -> int:
-        if hasattr(self, "_main_window") and self._main_window:
-            self._main_window.show()
+        if not self._startup_ok:
+            return 1
+        self._main_window.show()
         return self._qt_app.exec()
 
     @property
@@ -126,6 +161,7 @@ class _MainWindow(QMainWindow):
         self._active_widget: QWidget | None = None
 
         self.setWindowTitle(title)
+        self.setStyleSheet(DESKTOP_STYLE)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -136,6 +172,7 @@ class _MainWindow(QMainWindow):
 
         # Navigation
         self._nav = NavigationPanel()
+        self._nav.setObjectName("navigation")
         self._nav.on_select(self._on_navigate)
         splitter.addWidget(self._nav)
 
@@ -145,7 +182,9 @@ class _MainWindow(QMainWindow):
         self._content_layout.setContentsMargins(0, 0, 0, 0)
         splitter.addWidget(self._content)
 
-        splitter.setSizes([250, 950])
+        splitter.setChildrenCollapsible(False)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([240, 960])
         layout.addWidget(splitter)
 
         self.statusBar().showMessage(f"Готово к работе · БД: {database._path}")
@@ -159,8 +198,10 @@ class _MainWindow(QMainWindow):
         self._active_widget = None
         while self._content_layout.count():
             item = self._content_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            widget = item.widget()
+            if widget is not None:
+                widget.hide()
+                widget.deleteLater()
 
     def _confirm_leave_active_form(self) -> bool:
         """Ask user before discarding unsaved edits on an open AutoForm."""
@@ -231,7 +272,9 @@ class _MainWindow(QMainWindow):
         if isinstance(self._active_widget, ListView):
             self._active_widget.refresh()
         elif isinstance(self._active_widget, AutoForm):
-            self._active_widget._refresh_ref_editors()
+            self._active_widget.refresh_related_data()
+        elif isinstance(self._active_widget, ReportView):
+            self._active_widget.refresh()
 
     # ------------------------------------------------------------------
     # Navigation handler
@@ -333,25 +376,15 @@ class _MainWindow(QMainWindow):
             )
             self._refresh_active_view()
             return
-        data = full.to_dict()
-        data.pop("id", None)
-        data.pop("_id", None)
-        num_cfg = getattr(type(entity), "__numbering__", None)
-        if num_cfg:
-            field_name = num_cfg.get(
-                "field", "number" if entity._meta.is_document else "code"
-            )
-            data.pop(field_name, None)
-        if entity._meta.is_document:
-            data["posted"] = False
-        clone = type(entity).from_dict(data)
-        self._show_form(type(entity), clone)
+        try:
+            self._show_form(type(entity), full.copy_for_edit(self._db))
+        except Exception as exc:
+            _show_error(self, "Ошибка копирования", exc)
 
     # ── Report view ──
 
     def _show_report(self, report_class: type) -> None:
         try:
-            from decui.ui.report_view import ReportView
             report_view = ReportView(report_class, self._db)
             report_view.drill_down_requested.connect(self._on_drill_down)
             self._active_widget = report_view

@@ -84,10 +84,13 @@ class ListView(QWidget):
         entity_class: type,
         database: Database,
         parent: QWidget | None = None,
+        *,
+        filters: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(parent)
         self._entity_class = entity_class
         self._db = database
+        self._filters = filters
         self._items: list[Any] = []
         self._action_buttons: dict[str, QPushButton] = {}
         self._proxy = _ListSortProxy(self)
@@ -107,43 +110,61 @@ class ListView(QWidget):
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(12)
+        if not self._filters:
+            title = QLabel(self._entity_class._meta.verbose_name)
+            title.setTextFormat(Qt.TextFormat.PlainText)
+            title.setProperty("heading", True)
+            title.setWordWrap(True)
+            layout.addWidget(title)
 
         # -- Toolbar --
         toolbar = QHBoxLayout()
         for action in DEFAULT_ACTIONS:
             label = _ACTION_LABELS.get(action, action)
             btn = QPushButton(label)
+            if action == "New":
+                btn.setProperty("primary", True)
             btn.clicked.connect(lambda checked=False, a=action: self._on_action(a))
             self._action_buttons[action] = btn
             toolbar.addWidget(btn)
 
         toolbar.addStretch()
 
+        layout.addLayout(toolbar)
+
+        search_row = QHBoxLayout()
         self._search_edit = QLineEdit()
-        self._search_edit.setPlaceholderText("🔍 Поиск (Ctrl+F)...")
+        self._search_edit.setPlaceholderText("Поиск (Ctrl+F)")
         self._search_edit.setClearButtonEnabled(True)
         self._search_edit.setMaximumWidth(260)
         self._search_edit.textChanged.connect(self._on_search_changed)
-        toolbar.addWidget(self._search_edit)
+        search_row.addWidget(self._search_edit)
+        search_row.addStretch()
 
         self._count_label = QLabel("")
-        self._count_label.setStyleSheet("padding: 0 8px; opacity: 0.75;")
-        toolbar.addWidget(self._count_label)
-
-        layout.addLayout(toolbar)
+        search_row.addWidget(self._count_label)
+        layout.addLayout(search_row)
 
         # -- Table --
         self._table = QTableView()
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._table.setAlternatingRowColors(True)
+        self._table.setShowGrid(False)
+        self._table.setWordWrap(False)
+        self._table.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self._table.verticalHeader().setVisible(False)
+        self._table.verticalHeader().setDefaultSectionSize(34)
         self._table.setSortingEnabled(True)
+        if getattr(self._entity_class, "__list_order__", None):
+            self._table.sortByColumn(-1, Qt.SortOrder.AscendingOrder)
         self._table.doubleClicked.connect(self._on_double_click)
         layout.addWidget(self._table)
 
         hdr = self._table.horizontalHeader()
-        hdr.setStretchLastSection(True)
+        hdr.setStretchLastSection(not self._filters)
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
 
         # Shortcuts
@@ -161,7 +182,7 @@ class ListView(QWidget):
     def refresh(self) -> None:
         """Reload data from the database and rebuild the table."""
         try:
-            self._items = self._db.list(self._entity_class)
+            self._items = self._db.filter(self._entity_class, **self._filters) if self._filters else self._db.list(self._entity_class)
             self._rebuild_model()
         except Exception as exc:
             QMessageBox.critical(self, "Ошибка", str(exc))
@@ -258,7 +279,9 @@ class ListView(QWidget):
 
     def _rebuild_model(self) -> None:
         visible_fields: list[tuple[str, Field]] = [
-            (n, f) for n, f in self._entity_class._meta.fields.items() if f.visible
+            (n, f) for n, f in self._entity_class._meta.fields.items()
+            if f.visible and n not in getattr(self._entity_class, "__list_exclude__", ())
+            and n not in (self._filters or {})
         ]
         headers = [f.display_name for _, f in visible_fields]
         is_doc = self._entity_class._meta.is_document
@@ -281,13 +304,28 @@ class ListView(QWidget):
         self._proxy.setSourceModel(source_model)
         self._table.setModel(self._proxy)
         self._table.resizeColumnsToContents()
+        for column in range(len(headers)):
+            width = self._table.columnWidth(column)
+            title_width = self._table.horizontalHeader().fontMetrics().horizontalAdvance(headers[column])
+            self._table.setColumnWidth(column, min(440, max(92, width + 10, title_width + 34)))
+        if self._filters and headers:
+            self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
 
         sel_model = self._table.selectionModel()
         if sel_model is not None:
             sel_model.currentChanged.connect(lambda *_: self._update_button_states())
 
+        sort_field = getattr(self._entity_class, "__list_order__", None)
+        if sort_field and self._table.horizontalHeader().sortIndicatorSection() < 0:
+            self._sort_by_field(sort_field, visible_fields)
         self._update_count_label()
         self._update_button_states()
+
+    def _sort_by_field(self, name: str, fields: list[tuple[str, Field]]) -> None:
+        for column, (field_name, _) in enumerate(fields):
+            if field_name == name:
+                self._table.sortByColumn(column, Qt.SortOrder.AscendingOrder)
+                break
 
     def _on_search_changed(self, text: str) -> None:
         self._proxy.setFilterFixedString(text)
@@ -341,9 +379,10 @@ class ListView(QWidget):
             if ans != QMessageBox.StandardButton.Yes:
                 return
             try:
-                if hasattr(entity, "clear_movements"):
-                    entity.clear_movements(self._db)
-                self._db.delete(entity)
+                with self._db.transaction():
+                    if hasattr(entity, "clear_movements"):
+                        entity.clear_movements(self._db)
+                    self._db.delete(entity)
                 self.refresh()
                 self.data_changed.emit()
             except Exception as exc:
@@ -403,7 +442,7 @@ class _TableModel(QAbstractTableModel):
         row_idx = index.row()
         col_idx = index.column()
 
-        if role == Qt.ItemDataRole.DisplayRole:
+        if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.ToolTipRole):
             return self._rows[row_idx][col_idx]
 
         if role == Qt.ItemDataRole.UserRole:
@@ -414,7 +453,7 @@ class _TableModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.FontRole:
             if 0 <= row_idx < len(self._items):
                 item = self._items[row_idx]
-                if self._is_item_done(item):
+                if self._is_item_done(item) and getattr(type(item), "__strike_completed__", True):
                     f = QFont()
                     f.setStrikeOut(True)
                     return f
@@ -423,7 +462,9 @@ class _TableModel(QAbstractTableModel):
             if 0 <= row_idx < len(self._items):
                 item = self._items[row_idx]
                 if self._is_item_done(item):
-                    return QColor(128, 128, 128)
+                    if getattr(type(item), "__strike_completed__", True):
+                        return QColor(128, 128, 128)
+                    return None
                 if self._is_item_overdue(item):
                     return QColor("#dc2626")
 

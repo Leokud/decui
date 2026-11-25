@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime
 from abc import ABC, abstractmethod
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Callable, Generic, Self, TypeVar, overload
+from typing import TYPE_CHECKING, Any, Callable, Generic, Literal, Self, TypeVar, overload
 
 if TYPE_CHECKING:
     from .entity import Entity
@@ -472,6 +472,8 @@ class RefField(Field[int]):
         *,
         representation_field: str | None = None,
         auto_fill: str | None = None,
+        on_delete: Literal["RESTRICT", "CASCADE"] = "RESTRICT",
+        related_list: str | None = None,
         required: bool = False,
         default: int | Callable[[], int] | None = None,
         read_only: bool = False,
@@ -491,6 +493,8 @@ class RefField(Field[int]):
         self.target = target
         self.representation_field = representation_field
         self.auto_fill = auto_fill
+        self.on_delete = on_delete
+        self.related_list = related_list
 
     def resolve_target(self) -> type:
         if isinstance(self.target, str):

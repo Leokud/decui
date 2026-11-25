@@ -564,6 +564,27 @@ class Entity(metaclass=EntityMeta):
         """Hook called before deleting this entity from the database."""
         pass
 
+    def after_delete(self, db: Database) -> None:
+        """Update dependent data after deletion, before the transaction commits."""
+
+    def prepare_copy(self, db: Database) -> None:
+        """Adjust the new entity before opening it in the copy form."""
+
+    def copy_for_edit(self, db: Database) -> Self:
+        """Create an unsaved copy, resetting system-managed fields."""
+        data = self.to_dict()
+        data.pop("id", None)
+        data.pop("_id", None)
+        numbering = getattr(type(self), "__numbering__", None)
+        if numbering:
+            number_field = "number" if self._meta.is_document else "code"
+            data.pop(numbering.get("field", number_field), None)
+        if self._meta.is_document:
+            data["posted"] = False
+        clone = type(self).from_dict(data)
+        clone.prepare_copy(db)
+        return clone
+
     # ── Active Record ──
 
     def save(self, db: Database, *, validate: bool = False) -> Self:

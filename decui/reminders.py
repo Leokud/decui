@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import datetime
 import html
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QDateTimeEdit,
     QDialog,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
@@ -92,40 +94,38 @@ class ReminderDialog(QDialog):
         self._on_postpone = on_postpone
         self._on_complete = on_complete
 
-        self.setWindowTitle("🔔 Напоминание о сроке")
+        self.setWindowTitle("Напоминание о сроке")
         self.setMinimumWidth(440)
         self._build_ui()
+        self.resize(540, 330)
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setSpacing(14)
+        layout.setContentsMargins(22, 20, 22, 20)
 
-        # Header with bell
-        header = QLabel("<h3>🔔 Приближается срок выполнения!</h3>")
-        header.setStyleSheet("color: #d97706;")
+        deadline = _naive_local_dt(self._entity._data.get(self._date_field))
+        overdue = deadline is not None and deadline < datetime.datetime.now()
+        header = QLabel("Срок истёк" if overdue else "Приближается срок выполнения")
+        header.setProperty("heading", True)
+        header.setWordWrap(True)
         layout.addWidget(header)
 
-        # Entity title
-        title_val = str(self._entity._data.get(self._title_field) or "Задача")
-        title_lbl = QLabel(f"<b>{html.escape(title_val)}</b>")
-        title_lbl.setStyleSheet("font-size: 15px;")
-        layout.addWidget(title_lbl)
-
-        # Deadline
+        title = str(self._entity._data.get(self._title_field) or "Задача")
         dt_val = self._entity._data.get(self._date_field)
         dt_str = dt_val.strftime("%d.%m.%Y %H:%M") if isinstance(dt_val, datetime.datetime) else (
             dt_val.strftime("%d.%m.%Y") if isinstance(dt_val, datetime.date) else "Срок не указан"
         )
-        dt_lbl = QLabel(f"⏰ Срок: <b>{html.escape(dt_str)}</b>")
-        layout.addWidget(dt_lbl)
-
-        # Description if present
-        desc_val = self._entity._data.get(self._desc_field)
-        if desc_val:
-            desc_lbl = QLabel(str(desc_val))
-            desc_lbl.setWordWrap(True)
-            desc_lbl.setStyleSheet("opacity: 0.8; font-style: italic;")
-            layout.addWidget(desc_lbl)
+        description = html.escape(str(self._entity._data.get(self._desc_field) or ""))
+        details = QTextBrowser()
+        details.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        details.setMinimumHeight(130)
+        details.setHtml(
+            f"<p><b>{html.escape(title)}</b></p>"
+            f"<p>Срок: <b>{html.escape(dt_str)}</b></p>"
+            f"<p>{description.replace(chr(10), '<br>')}</p>"
+        )
+        layout.addWidget(details, stretch=1)
 
         # Postpone editor section
         self._snooze_widget = QWidget()
@@ -153,23 +153,23 @@ class ReminderDialog(QDialog):
         layout.addWidget(self._snooze_widget)
 
         # Action Buttons
-        btn_layout = QHBoxLayout()
+        btn_layout = QGridLayout()
         btn_open = QPushButton("Открыть задачу")
         btn_open.clicked.connect(self._action_open)
-        btn_layout.addWidget(btn_open)
+        btn_layout.addWidget(btn_open, 0, 0)
 
         btn_postpone = QPushButton("Перенести срок")
         btn_postpone.clicked.connect(self._toggle_postpone)
-        btn_layout.addWidget(btn_postpone)
+        btn_layout.addWidget(btn_postpone, 0, 1)
 
         btn_complete = QPushButton("Выполнено ✓")
-        btn_complete.setStyleSheet("background-color: #10b981; color: white; font-weight: bold;")
+        btn_complete.setProperty("primary", True)
         btn_complete.clicked.connect(self._action_complete)
-        btn_layout.addWidget(btn_complete)
+        btn_layout.addWidget(btn_complete, 1, 0)
 
         btn_close = QPushButton("Закрыть")
         btn_close.clicked.connect(self.reject)
-        btn_layout.addWidget(btn_close)
+        btn_layout.addWidget(btn_close, 1, 1)
 
         layout.addLayout(btn_layout)
 
@@ -184,8 +184,8 @@ class ReminderDialog(QDialog):
             new_val: Any = new_dt.date()
         else:
             new_val = new_dt
-        self._entity._data[self._date_field] = new_val
-        self._db.save(self._entity)
+        if not self._save_change(self._date_field, new_val):
+            return
         if callable(self._on_postpone):
             self._on_postpone(self._entity)
         QMessageBox.information(self, "Срок обновлён", f"Срок перенесён на {new_val}")
@@ -197,16 +197,38 @@ class ReminderDialog(QDialog):
             self._on_open(self._entity)
 
     def _action_complete(self) -> None:
-        if self._done_field in self._entity._meta.fields:
-            self._entity._data[self._done_field] = True
-        elif "status" in self._entity._meta.fields:
-            self._entity._data["status"] = "Завершена"
-        else:
-            self._entity._data[self._done_field] = True
-        self._db.save(self._entity)
+        field = self._done_field
+        value: Any = True
+        if field not in self._entity._meta.fields:
+            field, value = "status", "Завершена"
+        if not self._save_change(field, value):
+            return
+        message = getattr(self._entity, "_save_message", None)
+        if message:
+            celebrate_goal_completed(self, message)
         if callable(self._on_complete):
             self._on_complete(self._entity)
         self.accept()
+
+
+    def _save_change(self, field: str, value: Any) -> bool:
+        try:
+            with self._db.transaction():
+                pk = self._entity._id
+                current = self._db.get(type(self._entity), pk) if pk is not None else None
+                if current is None:
+                    raise ValueError("Запись была удалена.")
+                fields = (field, self._date_field, self._done_field)
+                if any(current._data.get(name) != self._entity._data.get(name) for name in fields):
+                    raise ValueError("Запись была изменена. Откройте её, чтобы проверить новые данные.")
+                current._data[field] = value
+                self._db.save(current, validate=True)
+            self._entity._data.update(current._data)
+            self._entity._save_message = getattr(current, "_save_message", None)
+            return True
+        except Exception as exc:
+            QMessageBox.warning(self, "Не удалось сохранить", str(exc))
+            return False
 
 
 class ReminderService(QObject):
@@ -228,8 +250,10 @@ class ReminderService(QObject):
         notify_before_minutes: int = 60,
         check_interval_ms: int = 30000,
         parent: QWidget | None = None,
+        eligible: Callable[[Entity], bool] | None = None,
     ) -> None:
         super().__init__(parent)
+        self._eligible = eligible
         self._db = database
         self._entity_classes = entity_classes
         self._date_field = date_field
@@ -238,7 +262,9 @@ class ReminderService(QObject):
         self._desc_field = desc_field
         self._notify_before = datetime.timedelta(minutes=notify_before_minutes)
         self._parent_widget = parent
-        self._dismissed_keys: set[tuple[str, int]] = set()
+        self._dismissed_keys: dict[tuple[str, int], datetime.datetime] = {}
+        self._open_keys: set[tuple[type, int]] = set()
+        self._dialogs: set[ReminderDialog] = set()
 
         self._timer = QTimer(self)
         self._timer.setInterval(check_interval_ms)
@@ -246,10 +272,16 @@ class ReminderService(QObject):
 
     def start(self) -> None:
         self._timer.start()
-        QTimer.singleShot(1000, self.check_deadlines)
+        QTimer.singleShot(1000, self, self._check_if_running)
 
     def stop(self) -> None:
         self._timer.stop()
+        for dialog in tuple(self._dialogs):
+            dialog.close()
+
+    def _check_if_running(self) -> None:
+        if self._timer.isActive():
+            self.check_deadlines()
 
     def check_deadlines(self) -> list[Entity]:
         """Check all entities and trigger reminders for items approaching deadline."""
@@ -277,7 +309,7 @@ class ReminderService(QObject):
                 status_val = str(item._data.get("status", "")).lower()
                 if status_val in ("завершена", "done", "completed", "выполнено"):
                     is_done = True
-                if is_done:
+                if is_done or (self._eligible is not None and not self._eligible(item)):
                     continue
 
                 # Check deadline
@@ -290,8 +322,8 @@ class ReminderService(QObject):
 
                 if dt <= horizon:
                     key = (cls.__name__, ent_id)
-                    if key not in self._dismissed_keys:
-                        self._dismissed_keys.add(key)
+                    if (cls, ent_id) not in self._open_keys and self._dismissed_keys.get(key) != dt:
+                        self._dismissed_keys[key] = dt
                         approaching.append(item)
                         self._trigger_reminder(item)
 
@@ -299,7 +331,7 @@ class ReminderService(QObject):
 
     def _on_entity_postponed(self, entity: Entity) -> None:
         if entity._id is not None:
-            self._dismissed_keys.discard((type(entity).__name__, entity._id))
+            self._dismissed_keys.pop((type(entity).__name__, entity._id), None)
         self.data_changed.emit()
 
     def _on_entity_completed(self, entity: Entity) -> None:
@@ -319,4 +351,15 @@ class ReminderService(QObject):
             on_postpone=self._on_entity_postponed,
             on_complete=self._on_entity_completed,
         )
+        if entity._id is None:
+            return
+        key = (type(entity), entity._id)
+        self._open_keys.add(key)
+        self._dialogs.add(dialog)
+
+        def finished() -> None:
+            self._open_keys.discard(key)
+            self._dialogs.discard(dialog)
+
+        dialog.finished.connect(finished)
         dialog.show()

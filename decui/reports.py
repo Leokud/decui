@@ -20,7 +20,7 @@ TReport = TypeVar("TReport", bound="Report")
 class Column:
     title: str
     field: str
-    width: int = 150
+    width: int = 150  # Set to 0 to fill the remaining table width.
     align: str = "left"
     aggregate: str | None = None
     """One of 'sum', 'avg', 'count', 'min', 'max' or None."""
@@ -234,6 +234,7 @@ class Report:
     title: ClassVar[str] = ""
     columns: ClassVar[list[Column]] = []
     auto_run: ClassVar[bool] = False
+    sortable: ClassVar[bool] = True
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)

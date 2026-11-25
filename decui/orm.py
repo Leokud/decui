@@ -3,10 +3,12 @@ from __future__ import annotations
 import datetime
 import traceback
 from contextlib import contextmanager
+from contextvars import ContextVar
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Iterator, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Iterator, TypeVar
 
 from sqlalchemy import (
+    URL,
     Boolean as SABoolean,
     Column,
     Date as SADate,
@@ -98,9 +100,12 @@ class Database:
         self._last_error: str | None = None
         self._path = path
         self._ready = False
+        self._write_state: ContextVar[tuple[Session, list[Callable[[], None]]] | None] = (
+            ContextVar("write_state", default=None)
+        )
         try:
             self._engine = create_engine(
-                f"sqlite:///{path}",
+                URL.create("sqlite", database=path),
                 echo=echo,
                 connect_args={"check_same_thread": False},
             )
@@ -152,6 +157,8 @@ class Database:
                     tgt = getattr(field, "target")
                     tname = tgt.__name__ if isinstance(tgt, type) else str(tgt)
                     info += f":{tname}"
+                    if isinstance(field, RefField) and field.on_delete != "RESTRICT":
+                        info += f":{field.on_delete}"
                 h.update(info.encode())
             for tp_name, tp in cls._meta.table_parts.items():
                 h.update(f"tp:{tp_name}".encode())
@@ -183,56 +190,39 @@ class Database:
             pass
 
     def _auto_upgrade(self) -> None:
-        """Non-destructive schema upgrade via ALTER TABLE ADD COLUMN when additive, else reset."""
-        try:
-            inspector = sa_inspect(self._engine)
-            existing_tables = set(inspector.get_table_names())
-            user_tables = [t for t in existing_tables if not t.startswith("_erp_")]
-            if not user_tables:
-                return  # fresh DB
+        """Apply additive SQLite changes and preserve existing data on failure."""
+        inspector = sa_inspect(self._engine)
+        existing_tables = set(inspector.get_table_names())
+        if "_erp_config" in existing_tables:
+            with self._engine.connect() as conn:
+                row = conn.execute(
+                    sa_text("SELECT value FROM _erp_config WHERE key = 'schema_hash'")
+                ).fetchone()
+            if row and row[0] == self._schema_hash():
+                return
 
-            # Check recorded schema hash
-            try:
-                with self._engine.connect() as conn:
-                    row = conn.execute(
-                        sa_text("SELECT value FROM _erp_config WHERE key = 'schema_hash'")
-                    ).fetchone()
-                if row and row[0] == self._schema_hash():
-                    return
-            except Exception:
-                pass
+        changes = []
+        for table in Base.metadata.sorted_tables:
+            if table.name not in existing_tables:
+                continue
+            db_cols = {c["name"] for c in inspector.get_columns(table.name)}
+            removed = db_cols - set(table.columns.keys())
+            if removed:
+                raise ValueError(
+                    f"Таблица {table.name}: требуется миграция для столбцов {', '.join(sorted(removed))}"
+                )
+            changes.extend((table, col) for col in table.columns if col.name not in db_cols)
 
-            # Inspect each registered table; apply additive ALTER TABLE ADD COLUMN where possible
-            dialect = self._engine.dialect
-            incompatible = False
+        if changes:
             with self._engine.begin() as conn:
-                for table in Base.metadata.sorted_tables:
-                    if table.name not in existing_tables:
-                        continue  # create_all will create it safely
-                    db_cols = {c["name"]: c for c in inspector.get_columns(table.name)}
-                    expected_names = {c.name for c in table.columns}
-                    # If columns were removed from model -> incompatible in SQLite without rebuild
-                    removed = set(db_cols.keys()) - expected_names
-                    if removed:
-                        incompatible = True
-                        break
-                    # Add missing new columns safely without losing user rows
-                    for col in table.columns:
-                        if col.name not in db_cols:
-                            col_type_sql = col.type.compile(dialect=dialect)
-                            # In SQLite ALTER TABLE ADD COLUMN, columns must be nullable or have DEFAULT
-                            conn.execute(
-                                sa_text(f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {col_type_sql}')
-                            )
-
-            if incompatible:
-                Base.metadata.drop_all(self._engine)
-        except Exception:
-            # Fallback clean reset only if inspection fails catastrophically
-            try:
-                Base.metadata.drop_all(self._engine)
-            except Exception:
-                pass
+                conn.exec_driver_sql("BEGIN")
+                dialect = conn.dialect
+                quote = dialect.identifier_preparer.quote
+                for table, col in changes:
+                    col_type = col.type.compile(dialect=dialect)
+                    conn.exec_driver_sql(
+                        f"ALTER TABLE {quote(table.name)} ADD COLUMN {quote(col.name)} {col_type}"
+                    )
 
     # ------------------------------------------------------------------
     # Model generation
@@ -335,7 +325,7 @@ class Database:
             target_table = self._table_name(target)
             return Column(
                 Integer,
-                ForeignKey(f"{target_table}.id", ondelete="RESTRICT"),
+                ForeignKey(f"{target_table}.id", ondelete=field.on_delete),
                 **col_kwargs,
             )
 
@@ -347,15 +337,57 @@ class Database:
 
     @contextmanager
     def session(self) -> Iterator[Session]:
+        state = self._write_state.get()
+        if state is not None:
+            yield state[0]
+            return
         sess = self._session_factory()
         try:
             yield sess
             sess.commit()
-        except Exception:
+        except BaseException:
             sess.rollback()
             raise
         finally:
             sess.close()
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """Group related writes into one SQLite transaction."""
+        self._check_ready()
+        with self._write_transaction():
+            yield
+
+    @contextmanager
+    def _write_transaction(self) -> Iterator[Session]:
+        state = self._write_state.get()
+        if state is not None:
+            sess, restore = state
+            start = len(restore)
+            try:
+                with sess.begin_nested():
+                    yield sess
+            except BaseException:
+                for undo in reversed(restore[start:]):
+                    undo()
+                del restore[start:]
+                raise
+            return
+
+        restore: list[Callable[[], None]] = []
+        try:
+            with self.session() as sess:
+                # Start the transaction before hook reads and SQLite savepoints.
+                sess.connection().exec_driver_sql("BEGIN IMMEDIATE")
+                token = self._write_state.set((sess, restore))
+                try:
+                    yield sess
+                finally:
+                    self._write_state.reset(token)
+        except BaseException:
+            for undo in reversed(restore):
+                undo()
+            raise
 
     # ------------------------------------------------------------------
     # CRUD
@@ -406,8 +438,6 @@ class Database:
             if errs:
                 raise ValueError("\n".join(errs))
 
-        entity.before_save(self)
-
         model_class = entity._meta.orm_model
         if model_class is None:
             self._prepare_models()
@@ -416,9 +446,21 @@ class Database:
         if model_class is None:
             raise RuntimeError(f"Модель для {type(entity).__name__} не создана")
 
-        self._assign_number(entity)
+        original_data = entity._data.copy()
+        original_id = entity._id
+
+        def restore_entity() -> None:
+            entity._data.clear()
+            entity._data.update(original_data)
+            object.__setattr__(entity, "_id", original_id)
+
         try:
-            with self.session() as sess:
+            with self._write_transaction() as sess:
+                state = self._write_state.get()
+                assert state is not None
+                state[1].append(restore_entity)
+                entity.before_save(self)
+                self._assign_number(entity, sess)
                 if entity._id is None:
                     model = model_class()
                     self._entity_to_model(entity, model)
@@ -433,10 +475,10 @@ class Database:
                         )
                     self._entity_to_model(entity, model)
                 self._save_table_parts(entity, sess)
+                sess.flush()
+                entity.after_save(self)
         except SQLAlchemyError as exc:
             raise RuntimeError(f"Ошибка SQL при сохранении: {exc}") from exc
-
-        entity.after_save(self)
         return entity
 
     def _save_table_parts(self, entity: Entity, sess: Session) -> None:
@@ -452,7 +494,7 @@ class Database:
                     setattr(row, name, val)
                 sess.add(row)
 
-    def _assign_number(self, entity: Entity) -> None:
+    def _assign_number(self, entity: Entity, session: Session) -> None:
         """Auto-assign a generated number if the entity has ``__numbering__``."""
         numbering_cfg = getattr(type(entity), "__numbering__", None)
         if not numbering_cfg or entity._id is not None:
@@ -475,7 +517,9 @@ class Database:
                 if hasattr(doc_date, "date"):
                     doc_date = doc_date.date()
                 period = doc_date
-        entity._data[field_name] = self.numbering.next_number(prefix, pattern, period)
+        entity._data[field_name] = self.numbering.next_number(
+            prefix, pattern, period, session=session
+        )
 
     def _check_ready(self) -> None:
         if not self._ready:
@@ -594,40 +638,44 @@ class Database:
         except SQLAlchemyError as exc:
             raise RuntimeError(f"Ошибка SQL при фильтрации: {exc}") from exc
 
+    def initialize(self, setup: Callable[[Database], None]) -> bool:
+        """Run a first-launch callback once per database, in one transaction."""
+        with self.transaction(), self.session() as session:
+            conn = session.connection()
+            if conn.exec_driver_sql("PRAGMA user_version").scalar():
+                return False
+            setup(self)
+            conn.exec_driver_sql("PRAGMA user_version = 1")
+        return True
+
     def seed(self, entities: list[TEntity]) -> list[TEntity]:
         """Save a batch list of entities."""
         return [self.save(e) for e in entities]
 
     def delete(self, entity: Entity) -> None:
-        """Delete an entity from the database."""
+        """Delete an entity and run its hooks in the same transaction."""
         self._check_ready()
         if entity._id is None:
             return
         model_class = entity._meta.orm_model
         if model_class is None:
             raise RuntimeError(f"Модель для {type(entity).__name__} не создана")
-        entity.before_delete(self)
         try:
-            with self.session() as sess:
+            with self._write_transaction() as sess:
                 model = sess.get(model_class, entity._id)
                 if model is not None:
+                    entity.before_delete(self)
                     sess.delete(model)
+                    sess.flush()
+                    entity.after_delete(self)
         except SQLAlchemyError as exc:
             raise RuntimeError(f"Ошибка SQL при удалении: {exc}") from exc
 
     def delete_by_id(self, entity_class: type[TEntity], id: int) -> None:
-        """Delete an entity by its primary key."""
-        self._check_ready()
-        model_class = entity_class._meta.orm_model
-        if model_class is None:
-            raise RuntimeError(f"Модель для {entity_class.__name__} не создана")
-        try:
-            with self.session() as sess:
-                model = sess.get(model_class, id)
-                if model is not None:
-                    sess.delete(model)
-        except SQLAlchemyError as exc:
-            raise RuntimeError(f"Ошибка SQL при удалении: {exc}") from exc
+        """Delete an entity by primary key, including its business hooks."""
+        entity = self.get(entity_class, id)
+        if entity is not None:
+            self.delete(entity)
 
     # ------------------------------------------------------------------
     # Utilities

@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import Any, cast
 
 from PySide6.QtCore import QDate, QDateTime, QTime, Qt
+from PySide6.QtGui import QTextOption
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -249,7 +250,8 @@ def _string_editor(field: StringField, parent: QWidget | None = None) -> QWidget
     if getattr(field, "multiline", False):
         plain_edit = QPlainTextEdit(parent)
         plain_edit.setMinimumHeight(70)
-        plain_edit.setMaximumHeight(160)
+        plain_edit.setMaximumHeight(112)
+        plain_edit.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
         plain_edit.setReadOnly(field.read_only)
         return plain_edit
     w = QLineEdit(parent)
