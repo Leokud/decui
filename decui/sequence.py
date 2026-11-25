@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
 from .entity import Entity
@@ -76,16 +77,12 @@ def has_permission(role: str, permission: str) -> bool:
     return permission in _ROLES.get(role, [])
 
 
+_current_role: ContextVar[str] = ContextVar("decui_current_role", default="admin")
+
+
 def current_role() -> str:
-    return getattr(_current_user, "_role", "admin")
-
-
-class _CurrentUser:
-    _role: str = "admin"
-
-
-_current_user = _CurrentUser()
+    return _current_role.get()
 
 
 def set_role(role: str) -> None:
-    _current_user._role = role
+    _current_role.set(role)

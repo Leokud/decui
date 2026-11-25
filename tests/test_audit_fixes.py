@@ -436,3 +436,144 @@ def test_cli_starter_template_check(tmp_path):
     proj = tmp_path / "demo_erp"
     assert cmd_new(argparse.Namespace(name=str(proj))) == 0
     assert cmd_check(argparse.Namespace(file=str(proj / "app.py"))) == 0
+
+
+def test_column_renames_preserve_header_and_line_items_and_roll_back_conflicts(tmp_path):
+    from contextlib import closing
+    import sqlite3
+
+    path = str(tmp_path / "renames.sqlite3")
+    original = Database(path)
+    document = BaseTPDoc(note="Сохранить", Rows=[
+        {"qty": 3, "time_slot": datetime.time(9, 30)},
+    ])
+    original.save(document)
+    table = BaseTPDoc._meta.table_name
+    part = BaseTPDoc._meta.table_parts["Rows"].table_name
+
+    previous_part = f"{table}_legacy_rows"
+    table_plan = {"BaseTPDoc": {"LegacyRows": "Rows"}}
+
+    with closing(sqlite3.connect(path)) as raw, raw:
+        raw.execute(f'ALTER TABLE "{table}" RENAME COLUMN note TO previous_note')
+        raw.execute(f'ALTER TABLE "{part}" ADD COLUMN previous_qty INTEGER')
+        raw.execute(f'ALTER TABLE "{part}" RENAME TO "{previous_part}"')
+
+    plan = {"BaseTPDoc": {"previous_note": "note"}, "BaseTPDoc.Rows": {"previous_qty": "qty"}}
+    failure = Database(path, column_renames=plan, table_part_renames=table_plan)
+    assert not failure._ready
+    assert "оба столбца" in failure._last_error
+    assert failure._migration_messages == []
+    with closing(sqlite3.connect(path)) as raw, raw:
+        assert raw.execute(f'SELECT previous_note FROM "{table}"').fetchone() == ("Сохранить",)
+        raw.execute(f'ALTER TABLE "{previous_part}" DROP COLUMN previous_qty')
+        raw.execute(f'ALTER TABLE "{previous_part}" RENAME COLUMN qty TO previous_qty')
+
+    for status in ("Переименована таблица", "уже существует"):
+        reopened = Database(path, column_renames=plan, table_part_renames=table_plan)
+        assert reopened._ready, reopened._last_error
+        assert status in reopened._migration_messages[0]
+        restored = reopened.get(BaseTPDoc, document.id)
+        assert restored.note == "Сохранить"
+        assert restored.Rows[0]["qty"] == 3
+        assert restored.Rows[0]["time_slot"] == datetime.time(9, 30)
+
+
+def test_database_post_restores_document_and_rows_on_movement_failure(monkeypatch):
+    db = Database.memory()
+    document = BaseTPDoc(note="Чистый черновик", Rows=[{
+        "qty": 5, "time_slot": datetime.time(9, 30),
+    }])
+
+    def fail_movements(self, database):
+        self.note = "Изменённое значение"
+        self.Rows[0]["qty"] = 9
+        raise ValueError("Движения отклонены")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(BaseTPDoc, "write_movements", fail_movements)
+        with pytest.raises(ValueError, match="Движения отклонены"):
+            db.post(document)
+    assert document.id is None
+    assert not document.is_posted
+    assert document.note == "Чистый черновик"
+    assert document.Rows[0]["qty"] == 5
+    assert not db.list(BaseTPDoc)
+
+    with pytest.raises(ValueError, match="Откат внешней операции"), db.transaction():
+        db.post(document)
+        assert document.is_posted
+        raise ValueError("Откат внешней операции")
+    assert document.id is None
+    assert not document.is_posted
+    assert not db.list(BaseTPDoc)
+
+    assert db.post(document) is document
+    assert db.get(BaseTPDoc, document.id).is_posted
+
+
+def test_document_command_rolls_back_change_when_register_rebuild_fails(monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from decui import command
+
+    @document
+    class CommandDocument(Document):
+        item = Ref(AuditItem, "Товар", required=True)
+        qty = Integer("Количество", required=True)
+
+        @command("Увеличить количество")
+        def increase(self):
+            self.qty += 1
+
+        def get_movements(self):
+            return [LedgerEntry(register=AuditLedger, dimensions={"item": self.item}, resources={"qty": self.qty})]
+
+    db = Database.memory()
+    item = db.save(AuditItem(name="Товар"))
+    record = db.post(CommandDocument(item=item.id, qty=3))
+    form = AutoForm(CommandDocument, db)
+    form.load_entity(record)
+    messages = []
+    monkeypatch.setattr(QMessageBox, "critical", lambda *_args: messages.append(_args[-1]))
+
+    def fail_movements(self, database):
+        raise ValueError("Ошибка регистра")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(CommandDocument, "write_movements", fail_movements)
+        form._execute_command("increase")
+    assert messages == ["Увеличить количество: Ошибка регистра"]
+    assert record.qty == db.get(CommandDocument, record.id).qty == 3
+    assert db.document_movements(record)[AuditLedger][0]["qty"] == Decimal(3)
+
+    assert db.execute_command(record, "increase") is record
+    assert db.get(CommandDocument, record.id).qty == 4
+    assert db.document_movements(record)[AuditLedger][0]["qty"] == Decimal(4)
+
+
+def test_command_role_is_enforced_when_post_invokes_custom_command():
+    from decui import command
+    from decui.accounts import Account, current_account, set_current_account
+
+    @document
+    class ControlledPosting(Document):
+        __command_roles__ = {"post": ("accountant",)}
+
+        @command("Провести")
+        def post(self):
+            super().post()
+
+    previous = current_account()
+    try:
+        db = Database.memory()
+        record = ControlledPosting()
+        set_current_account(Account("viewer", "editor"))
+        with pytest.raises(PermissionError, match="Команда проведения"):
+            db.post(record)
+        assert not record.is_posted and record.id is None
+
+        set_current_account(Account("bookkeeper", "accountant"))
+        assert db.post(record).is_posted
+    finally:
+        set_current_account(previous)

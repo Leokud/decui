@@ -60,6 +60,7 @@ from .movement import (
     write_movements,
 )
 from .orm import Database
+from .printing import PrintForm, PrintTable
 from .registry import (
     catalog,
     document,
@@ -82,6 +83,7 @@ from .reports import (
     ReportParam,
     StringParam,
     report,
+    register_report_rows,
 )
 from .sequence import (
     SequenceViolationError,
@@ -116,6 +118,8 @@ def __getattr__(name: str) -> Any:
         return val
     raise AttributeError(f"module 'decui' has no attribute '{name}'")
 
+
+from .workflow import Transition, Workflow, WorkflowEvent
 
 __all__ = [
     # Application & Database
@@ -198,6 +202,12 @@ __all__ = [
     "set_role",
     # Reports and parameters
     "Report",
+    "PrintForm",
+    "PrintTable",
+    "Transition",
+    "Workflow",
+    "WorkflowEvent",
+    "register_report_rows",
     "QueryReport",
     "ReportMeta",
     "ReportParam",

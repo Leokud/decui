@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import datetime
 import io
 from abc import ABC
 from dataclasses import dataclass
@@ -63,7 +64,7 @@ def calc_aggregate(values: list[Any], agg: str) -> str:
     nums = []
     for v in values:
         parsed = _parse_numeric_str(v)
-        if parsed is not None:
+        if parsed is not None and parsed.is_finite():
             nums.append(parsed)
     if not nums:
         return ""
@@ -78,6 +79,92 @@ def calc_aggregate(values: list[Any], agg: str) -> str:
     if agg == "max":
         return str(max(nums))
     return ""
+
+
+def group_report_rows(
+    rows: list[dict[str, Any]], columns: list[Column], groups: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    """Add one subtotal heading per group, retaining individual rows for drill-down."""
+    if not groups:
+        return rows
+    labels = {column.field: column.title for column in columns}
+    if len(set(groups)) != len(groups) or any(name not in labels for name in groups):
+        raise ValueError("Группировки должны ссылаться на разные колонки отчёта.")
+    measures = [column for column in columns if column.aggregate and column.field not in groups]
+    result: list[dict[str, Any]] = []
+
+    def append_group(details: list[dict[str, Any]], depth: int) -> None:
+        if depth == len(groups):
+            result.extend(details)
+            return
+        key = groups[depth]
+        partitions: dict[Any, list[dict[str, Any]]] = {}
+        for row in details:
+            values = row.get("_group_keys", {})
+            partitions.setdefault(values.get(key, row.get(key)), []).append(row)
+        for subset in partitions.values():
+            value = subset[0].get(key)
+            title = "—" if value in (None, "") else str(value)
+            label = "    " * depth + f"{labels[key]}: {title}"
+            heading: dict[str, Any] = {
+                "_style": "group", "_group_label": label, "_group_field": key,
+            }
+            for column in measures:
+                heading[column.field] = calc_aggregate(
+                    [row.get(column.field) for row in subset], column.aggregate or "",
+                )
+            result.append(heading)
+            append_group(subset, depth + 1)
+
+    append_group(rows, 0)
+    return result
+
+
+def register_report_rows(
+    db: Database,
+    register: type,
+    columns: list[str],
+    *,
+    on_date: datetime.date | None = None,
+    selected: int | None = None,
+    ref_filter: str = "",
+    order_by: str = "",
+    groups: tuple[str, ...] = (),
+) -> list[dict[str, Any]]:
+    """Read balances or information records and resolve displayed references."""
+    from .movement import RefDimension, get_balance, get_records
+
+    meta = register._register_meta
+    filters = {ref_filter: selected} if ref_filter and selected is not None else {}
+    if meta.register_type == "accumulation":
+        group_by = [name for name in columns if name in meta.dimensions]
+        rows = get_balance(db, register, on_date=on_date, group_by=group_by, **filters)
+    else:
+        rows = get_records(db, register, on_date=on_date, **filters)
+
+    for name in columns:
+        dimension = meta.dimensions.get(name)
+        if isinstance(dimension, RefDimension):
+            ids = {row[name] for row in rows if row[name] is not None}
+            if not ids:
+                continue
+            entities = db.filter(dimension.resolve_target(), id__in=ids)
+            labels = {item.id: str(item) for item in entities}
+            for row in rows:
+                if row[name] is not None:
+                    if name in groups:
+                        row.setdefault("_group_keys", {})[name] = row[name]
+                    row[name] = labels.get(row[name], str(row[name]))
+
+    if order_by:
+        key = order_by.removeprefix("-")
+        known = [row for row in rows if row.get(key) is not None]
+        known.sort(key=lambda row: row[key], reverse=order_by.startswith("-"))
+        rows = known + [row for row in rows if row.get(key) is None]
+    return [
+        {name: row.get(name) for name in columns + (["_group_keys"] if "_group_keys" in row else [])}
+        for row in rows
+    ]
 
 
 # ── Parameter descriptors ──────────────────────────────────────────
@@ -235,6 +322,8 @@ class Report:
     columns: ClassVar[list[Column]] = []
     auto_run: ClassVar[bool] = False
     sortable: ClassVar[bool] = True
+    group_by: ClassVar[tuple[str, ...]] = ()
+    _interactive_grouping: bool = False
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -271,11 +360,28 @@ class Report:
             if rows
             else []
         )
+        return cls._write_csv(rows, file_path, cols, cls.group_by)
+
+    @classmethod
+    def _write_csv(
+        cls, rows: list[dict[str, Any]], file_path: str | None, cols: list[Column], groups: tuple[str, ...],
+        *, include_totals: bool = False,
+    ) -> str:
         buf = io.StringIO()
         writer = csv.writer(buf, delimiter=";")
         writer.writerow([c.title for c in cols])
-        for row in rows:
-            writer.writerow([row.get(c.field, "") for c in cols])
+        for row in group_report_rows(rows, cols, groups):
+            writer.writerow([
+                row.get("_group_label") if c.field == row.get("_group_field") else row.get(c.field, "")
+                for c in cols
+            ])
+        if (groups or include_totals) and rows and any(c.aggregate for c in cols):
+            label_field = groups[0] if groups else cols[0].field
+            writer.writerow([
+                calc_aggregate([row.get(c.field) for row in rows], c.aggregate)
+                if c.aggregate else ("Итого" if c.field == label_field else "")
+                for c in cols
+            ])
         content = buf.getvalue()
         if file_path:
             with open(file_path, "w", encoding="utf-8-sig", newline="") as f:

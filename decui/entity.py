@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import datetime as _dt
 import inspect
+from collections.abc import Iterator
 from types import UnionType
 from typing import (
     TYPE_CHECKING,
@@ -31,8 +32,11 @@ from .fields import (
     TimeField,
 )
 
+from .workflow import Workflow
+
 if TYPE_CHECKING:
     from .orm import Database
+    from .printing import PrintForm
 
 TEntity = TypeVar("TEntity", bound="Entity")
 
@@ -452,10 +456,24 @@ class Entity(metaclass=EntityMeta):
     # Class-level metadata annotations for IDE autocompletion
     __verbose_name__: ClassVar[str | None] = None
     __section__: ClassVar[str | None] = None
+    __command_roles__: ClassVar[dict[str, tuple[str, ...]]] = {}
+    __list_columns__: ClassVar[tuple[str, ...]] = ()
+    __list_order__: ClassVar[str | None] = None
+    __form_table_tabs__: ClassVar[dict[str, str]] = {}
+    __form_tabs__: ClassVar[dict[str, str]] = {}
+    __required_when_visible__: ClassVar[tuple[str, ...]] = ()
+    __form_visible_when__: ClassVar[dict[str, tuple[str, bool | str]]] = {}
+    __form_groups__: ClassVar[dict[str, str]] = {}
     __subsystem__: ClassVar[str | None] = None
     __numbering__: ClassVar[dict[str, Any] | None] = None
     __defaults__: ClassVar[dict[str, Any] | None] = None
     __primary_key__: ClassVar[str] = "id"
+    __workflow__: ClassVar[Workflow | None] = None
+    __owner_field__: ClassVar[str | None] = None
+    __print_form__: ClassVar[PrintForm | None] = None
+    __permissions__: ClassVar[dict[str, tuple[str, ...]] | None] = None
+    __field_write_roles__: ClassVar[dict[str, tuple[str, ...]] | None] = None
+    __field_read_roles__: ClassVar[dict[str, tuple[str, ...]] | None] = None
 
     @property
     def id(self) -> int | None:
@@ -481,8 +499,12 @@ class Entity(metaclass=EntityMeta):
         object.__setattr__(self, "_data", {})
         object.__setattr__(self, "_id", None)
         object.__setattr__(self, "_table_data", {})
+        protected_defaults: dict[str, Any] = {}
+        object.__setattr__(self, "_protected_defaults", protected_defaults)
         for name, field in self._meta.fields.items():
             default = field.default() if callable(field.default) else field.default
+            if name in (self.__field_write_roles__ or {}) or name in (self.__field_read_roles__ or {}):
+                protected_defaults[name] = field.to_python(default) if default is not None else None
             value = kwargs.pop(name, default)
             if value is not None:
                 value = field.to_python(value)
@@ -536,16 +558,38 @@ class Entity(metaclass=EntityMeta):
     def validate(self) -> list[str]:
         """Validate all header fields, table part rows, and custom on_validate()."""
         errors: list[str] = []
+        masked = getattr(self, "_masked_fields", ())
         for name, field in self._meta.fields.items():
-            errors.extend(field.validate(self._data.get(name)))
-        for tp_name, tp in self._meta.table_parts.items():
-            rows = self._table_data.get(tp_name, [])
-            tp_label = tp.verbose_name or tp_name
-            for idx, row in enumerate(rows, start=1):
-                for fname, fdef in tp.fields.items():
-                    for err in fdef.validate(row.get(fname)):
-                        errors.append(f"{tp_label} (стр. {idx}): {err}")
+            if name in masked:
+                continue
+            errors.extend(self._validate_field(name, field))
+        for part, row, _, error in self._table_validation_errors():
+            table = self._meta.table_parts[part]
+            errors.append(f"{table.verbose_name or part} (стр. {row + 1}): {error}")
         errors.extend(self.on_validate() or [])
+        return errors
+
+    def _table_validation_errors(self) -> Iterator[tuple[str, int, str, str]]:
+        masked = getattr(self, "_masked_fields", ())
+        for part, table in self._meta.table_parts.items():
+            for index, row in enumerate(self._table_data.get(part, [])):
+                for name, field in table.fields.items():
+                    if f"{part}.{name}" in masked:
+                        continue
+                    for error in field.validate(row.get(name)):
+                        yield part, index, name, error
+
+    def _validate_field(self, name: str, field: Field) -> list[str]:
+        value = self._data.get(name)
+        errors = field.validate(value)
+        condition = self.__form_visible_when__.get(name)
+        if not field.required and name in self.__required_when_visible__ and condition is not None:
+            source, expected = condition
+            if (
+                source not in getattr(self, "_masked_fields", ())
+                and self._data.get(source) == expected and field._is_empty(value)
+            ):
+                errors.append(f"{field.display_name} обязательно")
         return errors
 
     def on_validate(self) -> list[str]:
@@ -581,6 +625,23 @@ class Entity(metaclass=EntityMeta):
             data.pop(numbering.get("field", number_field), None)
         if self._meta.is_document:
             data["posted"] = False
+        if self.__workflow__ is not None:
+            data[self.__workflow__.field] = self.__workflow__.initial
+            if self.__workflow__.uses_assignment:
+                data.pop(self.__workflow__.assignee_field, None)
+        if self.__owner_field__ is not None:
+            data.pop(self.__owner_field__, None)
+        for name in (self.__field_write_roles__ or {}).keys() | (self.__field_read_roles__ or {}).keys():
+            if db.can_edit_field(type(self), name):
+                continue
+            part, separator, column = name.partition(".")
+            if not separator:
+                data.pop(name, None)
+            else:
+                field = self._meta.table_parts[part].fields[column]
+                for row in data.get(part, []):
+                    default = field.default() if callable(field.default) else field.default
+                    row[column] = field.to_python(default) if default is not None else None
         clone = type(self).from_dict(data)
         clone.prepare_copy(db)
         return clone
@@ -713,18 +774,9 @@ class Document(Entity):
             return
         from .movement import clear_movements, get_all_registers
 
-        seen: set[int] = set()
-        movements = self.get_movements() or self.get_ledger_entries()
-        for mv in movements:
-            key = id(mv.register)
-            if key not in seen:
-                seen.add(key)
-                clear_movements(db, mv.register, self._id, type(self).__name__)
-        # Also clear across any registered accumulation/information registers if overridden/empty
-        if not seen:
-            doc_type = type(self).__name__
-            for reg in get_all_registers():
-                clear_movements(db, reg, self._id, doc_type)
+        doc_type = type(self).__name__
+        for register in get_all_registers():
+            clear_movements(db, register, self._id, doc_type)
 
     def _attach_doc_info(self, movements: list) -> list:
         for mv in movements:

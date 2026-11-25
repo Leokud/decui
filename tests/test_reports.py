@@ -76,3 +76,197 @@ def test_report_execution():
     assert len(rows) == 2
     assert rows[0]["name"] == "Алексей"
     assert rows[1]["name"] == "Андрей"
+
+
+def test_report_variants_restore_parameters_after_reopen_and_are_private(tmp_path, monkeypatch):
+    from PySide6.QtCore import QDate
+    from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox
+
+    from decui.accounts import Account, current_account, set_current_account
+    from decui.ui.report_view import ReportView
+
+    class VariantReport(Report):
+        prefix = StringParam("Префикс")
+        date = DateParam("На дату", required=False)
+
+    app = QApplication.instance() or QApplication([])
+    path = str(tmp_path / "variants.sqlite")
+    previous_account = current_account()
+    try:
+        set_current_account(Account("alice", "viewer"))
+        first = ReportView(VariantReport, Database(path))
+        first._param_widgets["prefix"].setText("А")
+        date = first._param_widgets["date"]
+        date.date_edit.setDate(QDate(2026, 11, 25))
+        date.checkbox.setChecked(True)
+        monkeypatch.setattr(QInputDialog, "getText", lambda *_args, **_kwargs: ("На ноябрь", True))
+        first._save_variant()
+
+        second = ReportView(VariantReport, Database(path))
+        second._apply_variant(1)
+        assert second._param_widgets["prefix"].text() == "А"
+        assert second._param_widgets["date"].value() == datetime.date(2026, 11, 25)
+
+        set_current_account(Account("bob", "viewer"))
+        other = ReportView(VariantReport, Database(path))
+        assert other._variant_picker.count() == 1
+
+        set_current_account(Account("alice", "viewer"))
+        second._variant_picker.setCurrentIndex(1)
+        monkeypatch.setattr(QMessageBox, "question", lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes)
+        second._delete_variant()
+        assert ReportView(VariantReport, Database(path))._variant_picker.count() == 1
+    finally:
+        set_current_account(previous_account)
+        app.processEvents()
+
+
+def test_report_variant_columns_apply_to_table_and_csv(tmp_path, monkeypatch):
+    from PySide6.QtCore import QTimer, Qt
+    from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QListWidget, QMessageBox, QPushButton
+
+    from decui.ui.report_view import ReportView
+
+    class SalesVariant(Report):
+        columns = [Column("Страна", "country"), Column("Город", "city"), Column("Сумма", "total", aggregate="sum")]
+        group_by = ("country",)
+
+    app = QApplication.instance() or QApplication([])
+    db = Database.memory()
+    db.save_report_variant("SalesVariant", "Старый вариант", {
+        "params": {}, "columns": ["country", "total"],
+    })
+    rows = [{"country": "Россия", "city": "Москва", "total": 5}]
+    view = ReportView(SalesVariant, db)
+    view._show_results(rows)
+    observed = []
+
+    def choose_columns():
+        dialog = app.activeModalWidget()
+        try:
+            options = dialog.findChild(QListWidget)
+            observed.append(bool(options.item(0).flags() & Qt.ItemFlag.ItemIsUserCheckable))
+            options.item(1).setCheckState(Qt.CheckState.Unchecked)
+            options.setCurrentRow(0)
+            down = next(button for button in dialog.findChildren(QPushButton) if button.text() == "Ниже")
+            down.click()
+            down.click()
+        finally:
+            dialog.accept()
+
+    QTimer.singleShot(0, choose_columns)
+    view._edit_columns()
+    assert observed == [False]
+    assert view._table.model().columnCount() == 2
+    monkeypatch.setattr(QInputDialog, "getText", lambda *_args, **_kwargs: ("Итоги", True))
+    view._save_variant()
+
+    restored = ReportView(SalesVariant, db)
+    restored._apply_variant(restored._variant_picker.findData("Итоги"))
+    restored._show_results(rows)
+    assert restored._table.model().columnCount() == 2
+    assert restored._table.model().headerData(0, Qt.Orientation.Horizontal) == "Сумма"
+    target = tmp_path / "report.csv"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *_args: (str(target), ""))
+    monkeypatch.setattr(QMessageBox, "information", lambda *_args: None)
+    restored._export_csv()
+    assert target.read_text(encoding="utf-8-sig").splitlines() == [
+        "Сумма;Страна", "5;Страна: Россия", "5;Россия", "5;Итого",
+    ]
+    restored._apply_variant(restored._variant_picker.findData("Старый вариант"))
+    assert restored._table.model().columnCount() == 2
+    assert restored._table.model().headerData(0, Qt.Orientation.Horizontal) == "Страна"
+
+
+def test_custom_report_groups_keep_reference_identity_and_export_subtotals(tmp_path, monkeypatch):
+    from PySide6.QtCore import QTimer, Qt
+    from PySide6.QtWidgets import QApplication, QComboBox, QFileDialog, QInputDialog, QListWidget, QMessageBox
+
+    from decui.ui.report_view import ReportView
+
+    class StoreReport(Report):
+        columns = [Column("Склад", "store"), Column("Остаток", "total", aggregate="sum")]
+
+    app = QApplication.instance() or QApplication([])
+    db = Database.memory()
+    rows = [
+        {"store": "Главный", "total": 5, "_group_keys": {"store": 1}},
+        {"store": "Главный", "total": 3, "_group_keys": {"store": 2}},
+    ]
+    view = ReportView(StoreReport, db)
+    view._show_results(rows)
+    assert view._table.isSortingEnabled()
+
+    def group_by_store():
+        dialog = app.activeModalWidget()
+        try:
+            dialog.findChild(QListWidget).item(0).setCheckState(Qt.CheckState.Checked)
+        finally:
+            dialog.accept()
+
+    QTimer.singleShot(0, group_by_store)
+    view._edit_groups()
+    assert not view._table.isSortingEnabled()
+    assert view._table.model().rowCount() == 5
+    def use_average():
+        dialog = app.activeModalWidget()
+        try:
+            editor = dialog.findChildren(QComboBox)[1]
+            editor.setCurrentIndex(editor.findData("avg"))
+        finally:
+            dialog.accept()
+
+    QTimer.singleShot(0, use_average)
+    view._edit_totals()
+    assert StoreReport.columns[1].aggregate == "sum"
+    assert "Среднее" in view._summary_label.text()
+    monkeypatch.setattr(QInputDialog, "getText", lambda *_args, **_kwargs: ("По складам", True))
+    view._save_variant()
+
+    restored = ReportView(StoreReport, db)
+    restored._apply_variant(restored._variant_picker.findData("По складам"))
+    restored._show_results(rows)
+    assert restored._table.model().rowCount() == 5
+    target = tmp_path / "stores.csv"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *_args: (str(target), ""))
+    monkeypatch.setattr(QMessageBox, "information", lambda *_args: None)
+    restored._export_csv()
+    assert target.read_text(encoding="utf-8-sig").splitlines() == [
+        "Склад;Остаток", "Склад: Главный;5", "Главный;5",
+        "Склад: Главный;3", "Главный;3", "Итого;4",
+    ]
+
+
+def test_report_variant_restores_sort_by_field_and_csv_matches(tmp_path, monkeypatch):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QMessageBox
+
+    from decui.ui.report_view import ReportView
+
+    class SortedReport(Report):
+        columns = [Column("Товар", "name"), Column("Количество", "qty", aggregate="sum")]
+
+    app = QApplication.instance() or QApplication([])
+    db = Database.memory()
+    rows = [{"name": "А", "qty": 2}, {"name": "Б", "qty": 10}, {"name": "В", "qty": 1}]
+    view = ReportView(SortedReport, db)
+    view._show_results(rows)
+    assert view._export_rows() == rows
+    view._table.sortByColumn(1, Qt.SortOrder.DescendingOrder)
+    assert [row["qty"] for row in view._export_rows()] == [10, 2, 1]
+    view._column_order = ["qty", "name"]
+    view._show_results(rows)
+    monkeypatch.setattr(QInputDialog, "getText", lambda *_args, **_kwargs: ("По количеству", True))
+    view._save_variant()
+
+    restored = ReportView(SortedReport, db)
+    restored._apply_variant(restored._variant_picker.findData("По количеству"))
+    restored._show_results(rows)
+    model = restored._table.model()
+    assert [model.data(model.index(row, 0)) for row in range(model.rowCount())] == ["10", "2", "1", "13"]
+    target = tmp_path / "sorted.csv"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *_args: (str(target), ""))
+    monkeypatch.setattr(QMessageBox, "information", lambda *_args: None)
+    restored._export_csv()
+    assert target.read_text(encoding="utf-8-sig").splitlines() == ["Количество;Товар", "10;Б", "2;А", "1;В"]
+    app.processEvents()

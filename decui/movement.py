@@ -280,6 +280,7 @@ def write_movements(db: Database, movements: list[Movement]) -> None:
     db._check_ready()
     with db.session() as session:
         for mv in movements:
+            db._require_register_document(session, mv.doc_type, mv.doc_id)
             meta = mv.register._register_meta
             model_class = meta.orm_model
             if model_class is None:
@@ -305,7 +306,9 @@ def write_movements(db: Database, movements: list[Movement]) -> None:
                 if not hasattr(row, k):
                     raise ValueError(f"Ресурс '{k}' не найден в регистре {meta.name}")
                 res_meta = meta.resources.get(k)
-                if res_meta and res_meta.field_type == Decimal:
+                if v is None:
+                    setattr(row, k, None)
+                elif res_meta and res_meta.field_type == Decimal:
                     dec_val = v if isinstance(v, _D) else _D(str(v))
                     setattr(row, k, dec_val * sign)
                 elif isinstance(v, _D):
@@ -332,7 +335,7 @@ def clear_movements(
     if model_class is None:
         return
     with db.session() as session:
-        q = session.query(model_class)
+        q = db._register_query(session, model_class, write=True)
         if doc_id is not None:
             q = q.filter(model_class.doc_id == doc_id)
         if doc_type:
@@ -355,7 +358,7 @@ def get_balance(
     if model_class is None:
         return []
     with db.session() as session:
-        q = session.query(model_class)
+        q = db._register_query(session, model_class)
         if on_date:
             eff_date = on_date.date() if isinstance(on_date, datetime.datetime) else on_date
             q = q.filter(model_class.period <= eff_date)
@@ -383,6 +386,8 @@ def get_balance(
                     entry[rn] = Decimal("0.00") if res_def.field_type == Decimal else 0
                 elif res_def.field_type == Decimal:
                     entry[rn] = val if isinstance(val, Decimal) else Decimal(str(val))
+                elif res_def.field_type is int:
+                    entry[rn] = int(val)
                 else:
                     entry[rn] = float(val)
             result.append(entry)
@@ -409,7 +414,7 @@ def get_records(
     if model_class is None:
         return []
     with db.session() as session:
-        q = session.query(model_class)
+        q = db._register_query(session, model_class)
         if on_date and hasattr(model_class, "period"):
             eff_date = on_date.date() if isinstance(on_date, datetime.datetime) else on_date
             q = q.filter(model_class.period <= eff_date)

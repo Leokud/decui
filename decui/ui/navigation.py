@@ -12,8 +12,11 @@ class NavigationPanel(QTreeWidget):
 
     SEP = "/"
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, parent: QWidget | None = None, *, can_read: Callable[[type], bool] | None = None,
+    ) -> None:
         super().__init__(parent)
+        self._can_read = can_read
         self.setHeaderHidden(True)
         self.setIndentation(16)
         self._on_select: Callable[[_ItemTarget], None] | None = None
@@ -48,6 +51,8 @@ class NavigationPanel(QTreeWidget):
             return self._branch_cache[path]
 
         for cls in get_all_entities():
+            if self._can_read is not None and not self._can_read(cls):
+                continue
             sub = (
                 getattr(cls, "__subsystem__", None)
                 or getattr(cls, "__section__", None)

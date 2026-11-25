@@ -3,9 +3,12 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import os
+import sqlite3
 import subprocess
 import sys
+import traceback
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 VERSION = "0.2.0"
 
@@ -259,11 +262,16 @@ def cmd_check(args: argparse.Namespace) -> int:
 
     mod = importlib.util.module_from_spec(spec)
     sys.path.insert(0, str(target_path.parent))
+    sys.modules[spec.name] = mod
     try:
         spec.loader.exec_module(mod)
     except Exception as exc:
-        print(f"Error importing {target}: {exc}")
+        print(f"Error importing {target}: {exc}", flush=True)
+        traceback.print_exc()
         return 1
+    finally:
+        sys.modules.pop(spec.name, None)
+        sys.path.pop(0)
 
     from decui.fields import RefField
     from decui.orm import Database
@@ -281,9 +289,39 @@ def cmd_check(args: argparse.Namespace) -> int:
                 except Exception as exc:
                     errors.append(f"{cls.__name__}.{fname}: {exc}")
 
-    db = Database.memory()
-    if not db._ready:
-        errors.append(f"Database init failed: {db._last_error}")
+    backup = getattr(args, "backup", None)
+    if not errors:
+        options = {
+            "column_renames": getattr(mod, "_DECUI_COLUMN_RENAMES", None),
+            "table_part_renames": getattr(mod, "_DECUI_TABLE_PART_RENAMES", None),
+        }
+        if backup is None:
+            db = Database(**options)
+            if not db._ready:
+                errors.append(f"Database init failed: {db._last_error}")
+        else:
+            from decui.files import stage_decui_backup
+
+            try:
+                with TemporaryDirectory(prefix="decui-migration-") as temporary:
+                    copy = Path(temporary) / "migration.sqlite3"
+                    stage_decui_backup(Path(backup), copy)
+                    db = Database(str(copy), **options)
+                    try:
+                        if not db._ready:
+                            errors.append(f"Ошибка миграции: {db._last_error}")
+                        else:
+                            with db._engine.connect() as connection:
+                                violation = connection.exec_driver_sql("PRAGMA foreign_key_check").first()
+                            if violation is not None:
+                                errors.append(f"Нарушена ссылочная целостность: таблица «{violation[0]}».")
+                            else:
+                                for message in db._migration_messages:
+                                    print(message)
+                    finally:
+                        db._engine.dispose()
+            except (OSError, ValueError, TimeoutError, sqlite3.Error) as exc:
+                errors.append(f"Не удалось проверить копию базы: {exc}")
 
     if errors:
         print("Validation FAILED:")
@@ -291,6 +329,8 @@ def cmd_check(args: argparse.Namespace) -> int:
             print(f"  - {e}")
         return 1
 
+    if backup is not None:
+        print("Копия базы открыта, ссылочная целостность проверена.")
     print(f"Validation OK ({target_path.name}): {len(entities)} entities, {len(reports)} reports.")
     return 0
 
@@ -304,26 +344,33 @@ def cmd_test(args: argparse.Namespace) -> int:
     return subprocess.call(test_args, env=env)
 
 
+def build_arguments(target: Path, *, name: str | None = None, dist_dir: Path | None = None) -> list[str]:
+    """Build the arguments shared by the CLI and Studio."""
+    build_cmd = [
+        "-m",
+        "PyInstaller",
+        "--noconfirm",
+        "--onefile",
+        "--windowed",
+        f"--name={name or target.stem}",
+        "--collect-all",
+        "sqlalchemy",
+    ]
+    if dist_dir is not None:
+        build_cmd.extend(["--distpath", str(dist_dir)])
+    for hi in _HIDDEN_IMPORTS:
+        build_cmd.extend(["--hidden-import", hi])
+    build_cmd.append(str(target))
+    return build_cmd
+
+
 def cmd_build(args: argparse.Namespace) -> int:
     target = _resolve_entrypoint(args.file)
     if target is None or not Path(target).is_file():
         print(f"Error: Target file '{target or 'app.py'}' does not exist.")
         return 1
 
-    build_cmd = [
-        sys.executable,
-        "-m",
-        "PyInstaller",
-        "--noconfirm",
-        "--onefile",
-        "--windowed",
-        f"--name={Path(target).stem}",
-        "--collect-all",
-        "sqlalchemy",
-    ]
-    for hi in _HIDDEN_IMPORTS:
-        build_cmd.extend(["--hidden-import", hi])
-    build_cmd.append(target)
+    build_cmd = [sys.executable, *build_arguments(Path(target))]
 
     print(f"Building standalone executable for {target}...")
     return subprocess.call(build_cmd)
@@ -338,6 +385,8 @@ def main() -> None:
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
+    subparsers.add_parser("studio", help="Open the DECUI visual application designer")
+
     p_new = subparsers.add_parser("new", help="Scaffold a new decui application")
     p_new.add_argument("name", help="Name of the new project directory")
 
@@ -347,6 +396,8 @@ def main() -> None:
     p_check = subparsers.add_parser("check", help="Validate entity models, Ref targets, and DB schema")
     p_check.add_argument("file", nargs="?", default=None, help="Python entrypoint script (default: app.py / main.py)")
 
+    p_check.add_argument("--backup", type=Path, help="Validate migration on a temporary copy of a DECUI backup")
+
     p_test = subparsers.add_parser("test", help="Run tests with pytest")
     p_test.add_argument("pytest_args", nargs=argparse.REMAINDER, help="Extra arguments passed to pytest")
 
@@ -355,7 +406,11 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    if args.command == "new":
+    if args.command == "studio":
+        from decui.studio import run_studio
+
+        sys.exit(run_studio())
+    elif args.command == "new":
         sys.exit(cmd_new(args))
     elif args.command == "run":
         sys.exit(cmd_run(args))

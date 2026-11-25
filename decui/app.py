@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import datetime
 import html
+import logging
 import re
+import sqlite3
 import traceback
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
@@ -9,9 +12,11 @@ from typing import TYPE_CHECKING, Any, Callable
 from PySide6.QtCore import QStandardPaths, Qt
 from PySide6.QtWidgets import (
     QApplication,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -19,10 +24,14 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from sqlalchemy.exc import SQLAlchemyError
 
+from decui.accounts import Account, AccountStore, current_account, set_current_account
+from decui.diagnostics import report_preview_exception
 from decui.orm import Database
+from decui.sequence import current_role, set_role
 from decui.ui.form import AutoForm
-from decui.ui.listview import ListView
+from decui.ui.listview import ListView, ListViewState
 from decui.ui.navigation import NavigationPanel
 from decui.ui.report_view import ReportView
 from decui.ui.theme import DESKTOP_STYLE
@@ -39,6 +48,7 @@ def _show_error(parent: QWidget | None, title: str, exc: Exception | str) -> Non
     tb = traceback.format_exc()
     if tb and tb.strip() != "NoneType: None":
         msg.setDetailedText(tb)
+        report_preview_exception()
     msg.exec()
 
 
@@ -56,6 +66,9 @@ class ERPApplication:
         db_filename: str = "data.sqlite3",
         start: type | None = None,
         first_run: Callable[[Database], None] | None = None,
+        local_accounts: bool = False,
+        column_renames: dict[str, dict[str, str]] | None = None,
+        table_part_renames: dict[str, dict[str, str]] | None = None,
     ) -> None:
         existing = QApplication.instance()
         self._qt_app = existing if isinstance(existing, QApplication) else QApplication(argv if argv is not None else [])
@@ -76,7 +89,7 @@ class ERPApplication:
             db_path = str(directory / db_filename)
         if db_path is None:
             db_path = ":memory:"
-        self._db = Database(path=db_path)
+        self._db = Database(path=db_path, column_renames=column_renames, table_part_renames=table_part_renames)
 
         self._main_window = _MainWindow(self._db, title=title)
         self._main_window.resize(*window_size)
@@ -93,15 +106,76 @@ class ERPApplication:
             if self._db._last_error:
                 msg.setDetailedText(self._db._last_error)
             msg.exec()
+        self.account: Account | None = None
+        self._previous_role = current_role()
+        self._previous_account = current_account()
         self._startup_ok = self._db._ready
+        if self._startup_ok and local_accounts:
+            self._startup_ok = self._sign_in()
         if self._startup_ok and first_run is not None:
             try:
                 self._db.initialize(first_run)
             except Exception as exc:
                 _show_error(self._main_window, "Ошибка начального заполнения", exc)
                 self._startup_ok = False
+        if self._startup_ok and (not local_accounts or (self.account is not None and self.account.role == "admin")):
+            self._data_menu = QMenu("Данные", self._main_window)
+            self._main_window.menuBar().addMenu(self._data_menu)
+            self._data_menu.addAction("Сохранить резервную копию", self._save_backup)
         if self._startup_ok and start is not None:
             self._main_window._on_navigate(start)
+
+    def _save_backup(self) -> None:
+        if not self._main_window._confirm_leave_active_form():
+            return
+        suggested = "backup-" + datetime.datetime.now().strftime("%Y-%m-%d-%H%M%S") + ".sqlite3"
+        path, _ = QFileDialog.getSaveFileName(
+            self._main_window, "Сохранить резервную копию", suggested, "SQLite (*.sqlite3)",
+            options=QFileDialog.Option.DontConfirmOverwrite,
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".sqlite3"):
+            path += ".sqlite3"
+        try:
+            destination = self._db.backup(path)
+        except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+            QMessageBox.warning(self._main_window, "Резервная копия", str(exc))
+            return
+        self._main_window.statusBar().showMessage(f"Резервная копия сохранена: {destination}", 7000)
+
+    def _sign_in(self) -> bool:
+        from decui.ui.accounts import AccountDialog
+
+        try:
+            store = AccountStore(self._db)
+            mode = "login" if store.has_accounts() else "first"
+            dialog = AccountDialog(store, self._main_window, mode=mode)
+            dialog.exec()
+            self.account = dialog.account
+            dialog.deleteLater()
+        except Exception as exc:
+            _show_error(self._main_window, "Ошибка входа", exc)
+            return False
+        if self.account is None:
+            return False
+        self._main_window._clear_content()
+        set_current_account(self.account)
+        set_role(self.account.role)
+        self._main_window._nav.refresh()
+        self._main_window._show_welcome()
+        if self.account.role == "admin":
+            self._account_menu = QMenu("Учётные записи", self._main_window)
+            self._main_window.menuBar().addMenu(self._account_menu)
+
+            def add_account() -> None:
+                dialog = AccountDialog(store, self._main_window, mode="create")
+                dialog.exec()
+                dialog.deleteLater()
+
+            self._account_menu.addAction("Добавить пользователя", add_account)
+        self._main_window.setWindowTitle(f"{self._main_window.windowTitle()} · {self.account.login}")
+        return True
 
     def enable_reminders(
         self,
@@ -136,10 +210,16 @@ class ERPApplication:
         return svc
 
     def run(self) -> int:
-        if not self._startup_ok:
-            return 1
-        self._main_window.show()
-        return self._qt_app.exec()
+        try:
+            if not self._startup_ok:
+                return 1
+            self._main_window.show()
+            return self._qt_app.exec()
+        finally:
+            self._main_window._remember_active_list()
+            if self.account is not None:
+                set_current_account(self._previous_account)
+                set_role(self._previous_role)
 
     @property
     def main_window(self) -> QMainWindow:
@@ -159,6 +239,7 @@ class _MainWindow(QMainWindow):
         self._title = title
         self._current_entity_class: type | None = None
         self._active_widget: QWidget | None = None
+        self._list_states: dict[tuple[str, type], ListViewState] = {}
 
         self.setWindowTitle(title)
         self.setStyleSheet(DESKTOP_STYLE)
@@ -171,7 +252,7 @@ class _MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
         # Navigation
-        self._nav = NavigationPanel()
+        self._nav = NavigationPanel(can_read=lambda entity_class: self._db.allows(entity_class, "read"))
         self._nav.setObjectName("navigation")
         self._nav.on_select(self._on_navigate)
         splitter.addWidget(self._nav)
@@ -194,7 +275,31 @@ class _MainWindow(QMainWindow):
     # Content management
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _list_state_key(entity: type) -> tuple[str, type]:
+        account = current_account()
+        return (account.login if account else "", entity)
+
+    def _remember_active_list(self) -> None:
+        if not isinstance(self._active_widget, ListView):
+            return
+        entity = self._active_widget._entity_class
+        state = self._active_widget.list_state()
+        key = self._list_state_key(entity)
+        if self._list_states.get(key) == state:
+            return
+        self._list_states[key] = state
+        try:
+            self._db.save_list_settings(entity, state.to_settings())
+        except (SQLAlchemyError, RuntimeError):
+            logging.getLogger(__name__).warning("Не удалось сохранить настройки списка", exc_info=True)
+
+    def closeEvent(self, event) -> None:
+        self._remember_active_list()
+        super().closeEvent(event)
+
     def _clear_content(self) -> None:
+        self._remember_active_list()
         self._active_widget = None
         while self._content_layout.count():
             item = self._content_layout.takeAt(0)
@@ -238,7 +343,7 @@ class _MainWindow(QMainWindow):
         sub.setStyleSheet("opacity: 0.75; font-size: 14px;")
         v.addWidget(sub)
 
-        entities = get_all_entities()
+        entities = [item for item in get_all_entities() if self._db.allows(item, "read")]
         if entities:
             v.addWidget(QLabel("<h3>Разделы и данные</h3>"))
             row = QHBoxLayout()
@@ -281,6 +386,8 @@ class _MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _on_navigate(self, target: Any) -> None:
+        if getattr(target, "_meta", None) is not None and not self._db.allows(target, "read"):
+            return
         if not self._confirm_leave_active_form():
             return
         try:
@@ -297,7 +404,15 @@ class _MainWindow(QMainWindow):
     def _show_list(self, entity_class: type) -> None:
         self._current_entity_class = entity_class
         try:
-            list_view = ListView(entity_class, self._db)
+            state = self._list_states.get(self._list_state_key(entity_class))
+            if state is None:
+                try:
+                    settings = self._db.list_settings(entity_class)
+                    if isinstance(settings, dict):
+                        state = ListView.state_from_settings(entity_class, self._db, settings)
+                except (SQLAlchemyError, RuntimeError):
+                    logging.getLogger(__name__).warning("Не удалось загрузить настройки списка", exc_info=True)
+            list_view = ListView(entity_class, self._db, state=state)
             list_view.create_requested.connect(self._on_create)
             list_view.edit_requested.connect(self._on_edit)
             list_view.copy_requested.connect(self._on_copy)
@@ -334,7 +449,7 @@ class _MainWindow(QMainWindow):
         self._show_list(entity_class)
 
     def _on_create(self, entity_class: type) -> None:
-        if not self._confirm_leave_active_form():
+        if not self._db.allows(entity_class, "create") or not self._confirm_leave_active_form():
             return
         self._show_form(entity_class, None)
 
