@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import datetime
+import logging
+from collections.abc import Mapping
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -15,7 +17,7 @@ from PySide6.QtCore import (
     Qt,
     Signal,
 )
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtGui import QColor, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -43,7 +45,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from decui.diagnostics import report_preview_exception
 from decui.reports import (
     BooleanParam,
     ChoiceParam,
@@ -61,7 +62,7 @@ from decui.reports import (
 from decui.reports import (
     Column as ColumnMeta,
 )
-from decui.ui.editors import populate_ref_editor
+from decui.ui.editors import populate_ref_editor, show_ui_error
 
 if TYPE_CHECKING:
     from decui.orm import Database
@@ -140,6 +141,8 @@ class ReportView(QWidget):
         report_class: type[Report],
         database: Database,
         parent: QWidget | None = None,
+        *,
+        initial_refs: Mapping[str, int] | None = None,
     ) -> None:
         super().__init__(parent)
         self._report_class = report_class
@@ -149,6 +152,8 @@ class ReportView(QWidget):
         self._report_instance = report_class()
         self._report_instance._interactive_grouping = True
         self._last_rows: list[dict[str, Any]] = []
+        self._applied_params: dict[str, Any] | None = None
+        self._generation_failed = False
         self._selected_columns: set[str] | None = None
         self._column_order: list[str] = []
         self._displayed_columns: list[ColumnMeta] = []
@@ -160,6 +165,16 @@ class ReportView(QWidget):
         self._proxy.setSortRole(Qt.ItemDataRole.UserRole)
 
         self._build_ui()
+        self._watch_params()
+        for name, record_id in (initial_refs or {}).items():
+            param = report_class._report_meta.params.get(name)
+            widget = self._param_widgets.get(name)
+            if not isinstance(param, RefParam) or not isinstance(widget, QComboBox):
+                raise ValueError(f"Параметр «{name}» не является ссылкой.")
+            index = widget.findData(record_id, Qt.ItemDataRole.UserRole)
+            if index < 0:
+                raise ValueError(f"Запись для параметра «{param.display_name}» удалена или недоступна.")
+            widget.setCurrentIndex(index)
         if getattr(report_class, "auto_run", False):
             self._generate()
 
@@ -191,7 +206,10 @@ class ReportView(QWidget):
                 label = param.display_name
                 if param.required:
                     label += " *"
-                form.addRow(QLabel(label + ":"), editor)
+                caption = QLabel(label + ":")
+                caption.setTextFormat(Qt.TextFormat.PlainText)
+                caption.setBuddy(editor)
+                form.addRow(caption, editor)
             layout.addLayout(form)
 
         self._variant_picker = QComboBox()
@@ -231,9 +249,20 @@ class ReportView(QWidget):
 
         generate_btn = QPushButton("Сформировать")
         generate_btn.setProperty("primary", True)
+        generate_btn.setToolTip("Сформировать отчёт (F5)")
         generate_btn.clicked.connect(self._generate)
         btn_layout.addWidget(generate_btn)
         layout.addLayout(btn_layout)
+
+        generate_shortcut = QShortcut(QKeySequence("F5"), self)
+        generate_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        generate_shortcut.activated.connect(self._generate)
+
+        self._result_notice = QLabel()
+        self._result_notice.setObjectName("reportNotice")
+        self._result_notice.setWordWrap(True)
+        self._result_notice.setVisible(False)
+        layout.addWidget(self._result_notice)
 
         # Summary panel
         self._summary_label = QLabel()
@@ -261,7 +290,8 @@ class ReportView(QWidget):
 
         self._no_data_label = QLabel("Нажмите «Сформировать» для вывода данных")
         self._no_data_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._no_data_label.setStyleSheet("font-style: italic; padding: 40px;")
+        self._no_data_label.setObjectName("emptyResults")
+        self._no_data_label.setWordWrap(True)
         layout.addWidget(self._no_data_label, stretch=1)
 
     def showEvent(self, event: Any) -> None:
@@ -276,6 +306,23 @@ class ReportView(QWidget):
                     target = param.resolve_target()
                     items = self._db.list(target)
                     populate_ref_editor(widget, items, param.representation_field)
+        self._update_result_status()
+
+    def _watch_params(self) -> None:
+        for widget in self._param_widgets.values():
+            if isinstance(widget, _OptionalDateWidget):
+                widget.checkbox.toggled.connect(self._update_result_status)
+                widget.date_edit.dateChanged.connect(self._update_result_status)
+            elif isinstance(widget, QDateEdit):
+                widget.dateChanged.connect(self._update_result_status)
+            elif isinstance(widget, QLineEdit):
+                widget.textChanged.connect(self._update_result_status)
+            elif isinstance(widget, QCheckBox):
+                widget.toggled.connect(self._update_result_status)
+            elif isinstance(widget, QComboBox):
+                widget.currentIndexChanged.connect(self._update_result_status)
+            elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
+                widget.valueChanged.connect(self._update_result_status)
 
     # ------------------------------------------------------------------
     # Param editor factory
@@ -333,7 +380,6 @@ class ReportView(QWidget):
 
         if isinstance(param, RefParam):
             w = QComboBox()
-            w.addItem("", None)
             target = param.resolve_target()
             items = self._db.list(target)
             populate_ref_editor(w, items, param.representation_field)
@@ -377,12 +423,22 @@ class ReportView(QWidget):
 
         return None
 
+    def _read_params(self) -> dict[str, Any]:
+        return {
+            name: self._read_param(param, self._param_widgets[name])
+            for name, param in self._report_class._report_meta.params.items()
+        }
+
     # ------------------------------------------------------------------
     # Execute & Export
     # ------------------------------------------------------------------
 
     def _reload_variants(self, selected: str = "") -> None:
-        self._variants = self._db.report_variants(self._variant_key)
+        try:
+            self._variants = self._db.report_variants(self._variant_key)
+        except Exception as exc:
+            self._variants = {}
+            show_ui_error(self, "Варианты отчёта", exc, warning=True)
         self._variant_picker.clear()
         self._variant_picker.addItem("Выберите вариант", "")
         for name in self._variants:
@@ -607,99 +663,135 @@ class ReportView(QWidget):
             self, "Заменить вариант", f"Заменить сохранённый вариант «{name}»?",
         ) != QMessageBox.StandardButton.Yes:
             return
-        values: dict[str, Any] = {}
-        for key, param in self._report_class._report_meta.params.items():
-            value = self._read_param(param, self._param_widgets[key])
-            values[key] = value.isoformat() if isinstance(value, datetime.date) else value
-        self._db.save_report_variant(self._variant_key, name, {
-            "params": values,
-            "columns": None if self._selected_columns is None else sorted(self._selected_columns),
-            "column_order": self._column_order,
-            "groups": self._group_order,
-            "aggregates": self._aggregates,
-            "sort": {
-                "field": self._sort_field,
-                "descending": self._sort_order == Qt.SortOrder.DescendingOrder,
-            },
-        })
-        self._reload_variants(name)
+        values = {
+            key: value.isoformat() if isinstance(value, datetime.date) else value
+            for key, value in self._read_params().items()
+        }
+        try:
+            self._db.save_report_variant(self._variant_key, name, {
+                "params": values,
+                "columns": None if self._selected_columns is None else sorted(self._selected_columns),
+                "column_order": self._column_order,
+                "groups": self._group_order,
+                "aggregates": self._aggregates,
+                "sort": {
+                    "field": self._sort_field,
+                    "descending": self._sort_order == Qt.SortOrder.DescendingOrder,
+                },
+            })
+            self._reload_variants(name)
+        except Exception as exc:
+            show_ui_error(self, "Варианты отчёта", exc, warning=True)
 
     def _delete_variant(self) -> None:
         name = self._variant_picker.currentData()
         if name and QMessageBox.question(
             self, "Удалить вариант", f"Удалить сохранённый вариант «{name}»?",
         ) == QMessageBox.StandardButton.Yes:
-            self._db.delete_report_variant(self._variant_key, name)
-            self._reload_variants()
+            try:
+                self._db.delete_report_variant(self._variant_key, name)
+                self._reload_variants()
+            except Exception as exc:
+                show_ui_error(self, "Варианты отчёта", exc, warning=True)
 
     def refresh(self) -> None:
-        """Update reference choices and re-run the displayed report."""
+        """Update reference choices and refresh the report if its parameters are unchanged."""
         self._refresh_ref_params()
-        if self._last_rows or self._report_class.auto_run:
+        if not self._params_changed() and (self._applied_params is not None or self._report_class.auto_run):
             self._generate()
 
     def _generate(self) -> None:
-        params: dict[str, Any] = {}
-        errors: list[str] = []
-        for name, param in self._report_class._report_meta.params.items():
-            widget = self._param_widgets[name]
-            value = self._read_param(param, widget)
-            if param.required and (value is None or value == ""):
-                errors.append(f"Не заполнен параметр «{param.display_name}»")
-            params[name] = value
-
-        if errors:
+        params = self._read_params()
+        missing = [
+            (name, param.display_name)
+            for name, param in self._report_class._report_meta.params.items()
+            if param.required and params[name] in (None, "")
+        ]
+        if missing:
+            errors = [f"Не заполнен параметр «{label}»" for _, label in missing]
             QMessageBox.warning(self, "Ошибка", "\n".join(errors))
+            self._param_widgets[missing[0][0]].setFocus()
+            self._update_result_status()
             return
 
         try:
             rows = self._report_instance.execute(self._db, **params)
             self._show_results(rows)
         except Exception as exc:
-            report_preview_exception()
-            QMessageBox.critical(self, "Ошибка", f"Ошибка формирования отчёта: {exc}")
+            if params == self._applied_params:
+                self._generation_failed = True
+            self._update_result_status()
+            show_ui_error(self, "Ошибка", exc, prefix="Ошибка формирования отчёта: ")
+        else:
+            self._applied_params = params
+            self._generation_failed = False
+            self._update_result_status()
+
+    def _params_changed(self) -> bool:
+        return self._applied_params is not None and self._read_params() != self._applied_params
+
+    def _update_result_status(self) -> None:
+        changed = self._params_changed()
+        notice = ""
+        if changed:
+            notice = "Параметры изменены. Нажмите «Сформировать», чтобы обновить результат."
+        elif self._generation_failed:
+            notice = "Не удалось обновить отчёт. Показан предыдущий результат."
+        self._result_notice.setText(notice)
+        self._result_notice.setVisible(bool(notice))
+        self._export_btn.setEnabled(bool(self._last_rows) and not changed and not self._generation_failed)
+
+    @staticmethod
+    def _format_column_value(column: ColumnMeta, text: str, numeric: Any = None) -> str:
+        if not text:
+            return ""
+        formatted = text
+        if column.format:
+            try:
+                num = float(numeric) if numeric is not None else float(text.replace(",", "."))
+                formatted = column.format.format(num)
+            except (ValueError, TypeError, KeyError, IndexError):
+                logging.getLogger(__name__).warning(
+                    "Не удалось отформатировать значение %r для колонки %s",
+                    text,
+                    column.field,
+                    exc_info=True,
+                )
+        if column.prefix:
+            formatted = column.prefix + formatted
+        if column.suffix:
+            formatted = formatted + column.suffix
+        return formatted
 
     def _show_results(self, rows: list[dict[str, Any]]) -> None:
-        self._last_rows = list(rows)
         available = self._available_columns(rows)
         self._columns_button.setEnabled(bool(available))
         self._groups_button.setEnabled(bool(available))
         self._totals_action.setEnabled(bool(available))
         if not rows:
+            self._last_rows = []
             self._table.setModel(None)
             self._table.setVisible(False)
             self._summary_label.setVisible(False)
-            self._export_btn.setEnabled(False)
             self._no_data_label.setVisible(True)
-            self._no_data_label.setText("Нет данных за выбранный период")
+            self._no_data_label.setText(
+                "Нет данных по применённым параметрам." if self._param_widgets else "В отчёте пока нет данных."
+            )
+            self._update_result_status()
             return
 
         columns = self._visible_columns(available)
 
-        self._no_data_label.setVisible(False)
-        self._table.setVisible(True)
-        self._export_btn.setEnabled(True)
-
-        # Summary
+        # Summary & footer aggregates (computed once per column)
+        aggregates: dict[str, str] = {}
         summary_parts: list[str] = [f"Всего строк: {len(rows)}"]
         for c in columns:
             if c.aggregate:
                 vals = [r.get(c.field, "") for r in rows]
-                raw = calc_aggregate(vals, c.aggregate)
-                if raw and c.format:
-                    try:
-                        raw = c.format.format(float(raw.replace(",", ".")))
-                    except Exception:
-                        pass
-                if raw and c.prefix:
-                    raw = c.prefix + raw
-                if raw and c.suffix:
-                    raw = raw + c.suffix
+                raw = self._format_column_value(c, calc_aggregate(vals, c.aggregate))
+                aggregates[c.field] = raw
                 agg_name = _AGGREGATE_LABELS.get(c.aggregate, c.aggregate)
                 summary_parts.append(f"{c.title} ({agg_name}): {raw}")
-        self._summary_label.setText(" | ".join(summary_parts))
-        self._summary_label.setVisible(True)
-
         headers = [c.title for c in columns]
         alignments = [c.align for c in columns]
         data: list[list[str]] = []
@@ -727,42 +819,18 @@ class ReportView(QWidget):
                     srow.append(str(val).lower() if val is not None else "")
 
                 s = str(val) if val is not None else ""
-                if s and c.format:
-                    try:
-                        s = c.format.format(float(parsed_num) if parsed_num is not None else float(s.replace(",", ".")))
-                    except Exception:
-                        pass
-                if s and c.prefix:
-                    s = c.prefix + s
-                if s and c.suffix:
-                    s = s + c.suffix
-                formatted_row.append(s)
+                formatted_row.append(self._format_column_value(c, s, parsed_num))
             data.append(formatted_row)
             sort_rows.append(srow)
 
         # Подвал с агрегатами
-        total_row: list[str] = []
-        total_sort: list[Any] = []
-        any_agg = False
-        for c in columns:
-            if c.aggregate:
-                any_agg = True
-                vals = [r.get(c.field, "") for r in rows]
-                raw = calc_aggregate(vals, c.aggregate)
-                if raw and c.format:
-                    try:
-                        raw = c.format.format(float(raw.replace(",", ".")))
-                    except Exception:
-                        pass
-                if raw and c.prefix:
-                    raw = c.prefix + raw
-                if raw and c.suffix:
-                    raw = raw + c.suffix
-                total_row.append(raw if raw else "")
-            else:
-                total_row.append("Итого" if c.field in groups[:1] else "")
-            total_sort.append(None)
+        any_agg = bool(aggregates)
         if any_agg:
+            total_row = [
+                aggregates.get(c.field, "") if c.aggregate else ("Итого" if c.field in groups[:1] else "")
+                for c in columns
+            ]
+            total_sort = [None for _ in columns]
             data.append(total_row)
             sort_rows.append(total_sort)
 
@@ -794,6 +862,13 @@ class ReportView(QWidget):
                 if c.width > 0:
                     self._table.setColumnWidth(i, c.width)
 
+        self._last_rows = list(rows)
+        self._summary_label.setText(" | ".join(summary_parts))
+        self._summary_label.setVisible(True)
+        self._no_data_label.setVisible(False)
+        self._table.setVisible(True)
+        self._update_result_status()
+
     def _remember_sort(self, index: int, order: Qt.SortOrder) -> None:
         if self._table.isSortingEnabled():
             self._sort_field = (
@@ -810,7 +885,8 @@ class ReportView(QWidget):
         ]
 
     def _export_csv(self) -> None:
-        if not self._last_rows:
+        self._update_result_status()
+        if not self._export_btn.isEnabled():
             return
         default_name = f"{self._report_class.__name__}.csv"
         path, _ = QFileDialog.getSaveFileName(
@@ -829,11 +905,11 @@ class ReportView(QWidget):
                     columns = self._visible_columns(available)
                     self._report_class._write_csv(
                         rows, path, columns, self._active_groups(available),
-                        include_totals=bool(self._aggregates),
+                        include_totals=any(v is not None for v in self._aggregates.values()),
                     )
                 QMessageBox.information(self, "Экспорт выполнен", f"Отчёт сохранён в {path}")
             except Exception as exc:
-                QMessageBox.critical(self, "Ошибка экспорта", str(exc))
+                show_ui_error(self, "Ошибка экспорта", exc)
 
     def _on_double_click(self, index: QModelIndex) -> None:
         if not index.isValid():

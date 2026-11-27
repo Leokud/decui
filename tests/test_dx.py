@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
+import sysconfig
 from decimal import Decimal
+from html import unescape
 from pathlib import Path
 import pytest
 
@@ -177,19 +181,134 @@ def test_repr_and_str():
     assert "INV-42" in repr(inv)
 
 
-def test_cli_new_and_run(tmp_path):
-    """decui CLI 'new' command scaffolds a runnable project."""
-    from decui.cli import cmd_new, cmd_run
+@pytest.mark.parametrize(
+    ("template_args", "schema_summary", "test_name"),
+    [
+        ([], "сущностей — 3, отчётов — 1", "test_order_round_trip"),
+        (["--template", "basic"], "сущностей — 1, отчётов — 0", "test_product_round_trip"),
+    ],
+)
+def test_installed_cli_scaffolds_and_tests_project(tmp_path, template_args, schema_summary, test_name):
+    name = "decui.exe" if sys.platform == "win32" else "decui"
+    executable = Path(sysconfig.get_path("scripts")) / name
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    env["QT_QPA_PLATFORM"] = "offscreen"
+    env["PYTHONIOENCODING"] = "utf-8"
+
+    def cli(cwd, *args):
+        result = subprocess.run(
+            [str(executable), *args], cwd=cwd, env=env, timeout=30,
+            capture_output=True, encoding="utf-8",
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        return result.stdout
+
+    assert cli(tmp_path, "--version").startswith("decui ")
+    assert "decui test" in cli(tmp_path, "new", "my_erp", *template_args)
+    project = tmp_path / "my_erp"
+    assert (project / "README.md").is_file()
+    ignore_rules = (project / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert {"*.db", "*.sqlite3", "*.db-*", "*.sqlite3-*", "/dist/"} <= set(ignore_rules)
+    assert schema_summary in cli(project, "check")
+    assert "1 passed" in cli(project, "test", "-q", f"test_app.py::{test_name}")
+    assert "pytest_args" in cli(project, "test", "--help")
+    if template_args:
+        tutorial = (Path(__file__).resolve().parents[1] / "docs/index.html").read_text(encoding="utf-8")
+        example = tutorial.split('id="basic-app-example"', 1)[1].split(
+            '<code class="language-python">', 1
+        )[1].split("</code>", 1)[0]
+        assert unescape(example) == (project / "app.py").read_text(encoding="utf-8").rstrip()
+
+
+def test_cli_check_reports_all_unregistered_reference_targets(tmp_path):
+    (tmp_path / "app.py").write_text(
+        """from decui import (
+    MasterData, Ref, RefDimension, RefParam, Report, Transaction,
+    ledger, line_items, report, transaction,
+)
+
+
+class Unregistered(MasterData):
+    pass
+
+
+@transaction
+class Order(Transaction):
+    customer = Ref(Unregistered)
+
+    @line_items
+    class Items:
+        product = Ref("MissingProduct")
+
+
+@report
+class Orders(Report):
+    customer = RefParam("Клиент", "MissingCustomer")
+
+
+@ledger
+class Stock:
+    product = RefDimension("MissingItem", "Товар")
+""",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-m", "decui.cli", "check"],
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        capture_output=True,
+        encoding="utf-8",
+        timeout=30,
+    )
+
+    assert result.returncode == 1
+    assert "Проверка не пройдена:" in result.stdout
+    assert "Order.customer: цель ссылки «Unregistered»" in result.stdout
+    assert "Order.Items.product: цель ссылки «MissingProduct»" in result.stdout
+    assert "Orders.customer: цель ссылки «MissingCustomer»" in result.stdout
+    assert "Stock.product: цель ссылки «MissingItem»" in result.stdout
+
+
+def test_cli_check_and_build_russian_messages(tmp_path, monkeypatch, capsys):
     import argparse
+    from decui import cli
 
-    target_dir = tmp_path / "my_erp"
-    args = argparse.Namespace(name=str(target_dir))
-    ret = cmd_new(args)
-    assert ret == 0
+    missing = tmp_path / "missing.py"
+    assert cli.cmd_check(argparse.Namespace(file=str(missing))) == 1
+    assert "не найден" in capsys.readouterr().err
 
-    assert (target_dir / "app.py").is_file()
-    assert (target_dir / "README.md").is_file()
+    broken_app = tmp_path / "broken.py"
+    broken_app.write_text("raise RuntimeError('сломанный импорт')\n", encoding="utf-8")
+    assert cli.cmd_check(argparse.Namespace(file=str(broken_app))) == 1
+    captured = capsys.readouterr()
+    assert "Ошибка импорта" in captured.err
 
-    content = (target_dir / "app.py").read_text(encoding="utf-8")
-    assert "ERPApplication" in content
-    assert "SalesOrder" in content
+    # Database init failure inside decui check prints Russian error without raw traceback
+    bad_schema_app = tmp_path / "bad_schema.py"
+    bad_schema_app.write_text(
+        "from decui import Catalog, Ref, catalog\n"
+        "@catalog\n"
+        "class BadA(Catalog):\n"
+        "    link = Ref('BadA', choice_filter={'missing': 'link'})\n",
+        encoding="utf-8",
+    )
+    bad_res = subprocess.run(
+        [sys.executable, "-m", "decui.cli", "check", str(bad_schema_app)],
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        capture_output=True,
+        encoding="utf-8",
+        timeout=30,
+    )
+    assert bad_res.returncode == 1
+    assert "Проверка не пройдена:" in bad_res.stdout
+    assert "Не удалось инициализировать базу данных:" in bad_res.stdout
+    assert "Traceback" not in bad_res.stdout
+
+    app_py = tmp_path / "app.py"
+    app_py.write_text("x = 1\n", encoding="utf-8")
+    monkeypatch.setattr(cli.subprocess, "call", lambda _cmd: 0)
+    assert cli.cmd_build(argparse.Namespace(file=str(app_py))) == 0
+    assert "Сборка исполняемого файла для" in capsys.readouterr().out

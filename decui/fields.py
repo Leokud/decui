@@ -241,6 +241,9 @@ class DecimalField(Field[Decimal]):
     def validate(self, value: Decimal | None) -> list[str]:
         errors = super().validate(value)
         if value is not None:
+            if not value.is_finite():
+                errors.append(f"{self.display_name} должно быть конечным числом")
+                return errors
             if self.min_value is not None and value < self.min_value:
                 errors.append(f"{self.display_name} не может быть меньше {self.min_value}")
             if self.max_value is not None and value > self.max_value:
@@ -385,8 +388,15 @@ class TimeField(Field[datetime.time]):
         if isinstance(value, datetime.time):
             return value
         if isinstance(value, str):
-            parts = value.split(":")
-            return datetime.time(int(parts[0]), int(parts[1]))
+            raw = value.strip()
+            if not raw:
+                return None
+            parts = raw.split(":")
+            if len(parts) not in (2, 3) or any(not part.isdigit() for part in parts):
+                raise ValueError(f"Некорректный формат времени: «{value}». Ожидается ЧЧ:ММ.")
+            hour, minute = int(parts[0]), int(parts[1])
+            second = int(parts[2]) if len(parts) == 3 else 0
+            return datetime.time(hour, minute, second)
         if isinstance(value, datetime.datetime):
             return value.time()
         raise TypeError(f"Cannot convert {type(value)} to time")
@@ -479,6 +489,7 @@ class RefField(Field[int]):
         auto_fill: str | None = None,
         on_delete: Literal["RESTRICT", "CASCADE"] = "RESTRICT",
         related_list: str | None = None,
+        choice_filter: dict[str, str] | None = None,
         create_from: str | None = None,
         basis_fields: dict[str, str] | None = None,
         basis_tables: dict[str, BasisTable] | None = None,
@@ -503,6 +514,7 @@ class RefField(Field[int]):
         self.auto_fill = auto_fill
         self.on_delete = on_delete
         self.related_list = related_list
+        self.choice_filter = dict(choice_filter or {})
         self.create_from = create_from
         self.basis_fields = dict(basis_fields or {})
         self.basis_tables = dict(basis_tables or {})

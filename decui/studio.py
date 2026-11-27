@@ -950,6 +950,12 @@ class StudioWindow(QMainWindow):
         target.addItems(["", *(e.name for e in self.project.entities)])
         target.setCurrentText(item.target)
         related, choices = QLineEdit(item.related_list), QLineEdit(item.choices)
+        choice_filter = QLineEdit(", ".join(f"{key}={value}" for key, value in item.choice_filter.items()))
+        choice_filter.setObjectName("field_choice_filter")
+        choice_filter.setPlaceholderText("owner=customer, city=delivery_city")
+        choice_filter.setToolTip("Поле объекта ссылки = поле текущей карточки")
+        form.addRow("Отбор вариантов ссылки", choice_filter)
+        filters = item.choice_filter.copy()
         create_from = QLineEdit(item.create_from)
         create_from.setPlaceholderText("Например, Создать накладную")
         form.addRow("Команда на исходной записи", create_from)
@@ -1062,6 +1068,7 @@ class StudioWindow(QMainWindow):
             form.setRowVisible(multiline, field_kind == "String")
             form.setRowVisible(target, field_kind == "Ref")
             form.setRowVisible(related, field_kind == "Ref" and self.table_part.currentIndex() == 0)
+            form.setRowVisible(choice_filter, field_kind == "Ref" and has_preview)
             form.setRowVisible(create_from, field_kind == "Ref" and has_preview)
             form.setRowVisible(mapping, field_kind == "Ref" and has_preview)
             form.setRowVisible(table_mapping, field_kind == "Ref" and has_preview)
@@ -1077,6 +1084,18 @@ class StudioWindow(QMainWindow):
             if row is not None and new != item.name and (not identifier(new) or any(other.name == new for other in fields)):
                 QMessageBox.warning(dialog, "Имя занято или недопустимо", "Укажите уникальное имя Python.")
                 return
+            filters.clear()
+            if has_preview and kind.currentText() == "Ref" and choice_filter.text().strip():
+                for pair in choice_filter.text().split(","):
+                    key, _, value = (part.strip() for part in pair.partition("="))
+                    if not identifier(key) or not identifier(value) or key in filters:
+                        QMessageBox.warning(
+                            dialog, "Отбор вариантов ссылки",
+                            "Укажите уникальные пары полей через запятую, например owner=customer.",
+                        )
+                        choice_filter.setFocus()
+                        return
+                    filters[key] = value
             dialog.accept()
 
         buttons.accepted.connect(accept_edit)
@@ -1103,7 +1122,8 @@ class StudioWindow(QMainWindow):
                                 basis_fields=basis_fields.copy()
                                 if has_preview and kind.currentText() == "Ref" and create_from.text().strip() else {},
                                 basis_tables=basis_tables.copy()
-                                if has_preview and kind.currentText() == "Ref" and create_from.text().strip() else {})
+                                if has_preview and kind.currentText() == "Ref" and create_from.text().strip() else {},
+                                choice_filter=filters.copy())
 
         if has_preview:
             preview = QWidget()

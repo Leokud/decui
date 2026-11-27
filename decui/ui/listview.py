@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import datetime
 import io
+import logging
 from copy import copy
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -42,6 +43,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from sqlalchemy.exc import SQLAlchemyError
 
 from decui.csv_import import (
     catalog_csv_keys,
@@ -61,11 +63,13 @@ from decui.fields import (
     StringField,
     TimeField,
 )
+from decui.reports import sanitize_csv_cell
 from decui.ui.editors import (
     create_editor,
     get_editor_value,
     populate_ref_editor,
     set_editor_value,
+    show_ui_error,
 )
 
 if TYPE_CHECKING:
@@ -164,7 +168,7 @@ class ListView(QWidget):
             if state is not None:
                 self._restore_list_state(state)
         except Exception as exc:
-            QMessageBox.critical(self, "Ошибка", str(exc))
+            show_ui_error(self, "Ошибка", exc)
 
     @classmethod
     def state_from_settings(
@@ -224,15 +228,16 @@ class ListView(QWidget):
 
     def _restore_list_state(self, state: ListViewState) -> None:
         self._search_edit.setText(state.search)
-        self._update_filter_button()
         if state.sort_field in self._list_field_names:
             self._table.sortByColumn(self._list_field_names.index(state.sort_field), state.sort_order)
-        if state.selected_id is None:
-            return
+        if state.selected_id is not None:
+            self._select_entity_by_id(state.selected_id)
+
+    def _select_entity_by_id(self, entity_id: int) -> None:
         source = self._proxy.sourceModel()
         if source is not None:
             for row, entity in enumerate(self._items):
-                if entity.id == state.selected_id:
+                if entity.id == entity_id:
                     index = self._proxy.mapFromSource(source.index(row, 0))
                     if index.isValid():
                         self._table.setCurrentIndex(index)
@@ -258,7 +263,7 @@ class ListView(QWidget):
                 self._table.sortByColumn(-1, Qt.SortOrder.AscendingOrder)
             self._restore_list_state(state)
         except Exception as exc:
-            QMessageBox.warning(self, "Варианты списка", str(exc))
+            show_ui_error(self, "Варианты списка", exc, warning=True)
 
     def _save_list_variant(self) -> None:
         name, accepted = QInputDialog.getText(self, "Сохранить вариант списка", "Название")
@@ -273,7 +278,7 @@ class ListView(QWidget):
                 return
             self._db.save_list_variant(self._entity_class, name, self.list_state().to_settings())
         except Exception as exc:
-            QMessageBox.warning(self, "Варианты списка", str(exc))
+            show_ui_error(self, "Варианты списка", exc, warning=True)
 
     def _delete_list_variant(self) -> None:
         try:
@@ -284,11 +289,7 @@ class ListView(QWidget):
             ) == QMessageBox.StandardButton.Yes:
                 self._db.delete_list_variant(self._entity_class, name)
         except Exception as exc:
-            QMessageBox.warning(self, "Варианты списка", str(exc))
-
-    def _update_filter_button(self) -> None:
-        count = sum(name in self._list_field_names for name in self._field_filters)
-        self._filters_button.setText(f"Отбор ({count})…" if count else "Отбор…")
+            show_ui_error(self, "Варианты списка", exc, warning=True)
 
     # ------------------------------------------------------------------
     # UI
@@ -322,11 +323,20 @@ class ListView(QWidget):
 
         search_row = QHBoxLayout()
         self._search_edit = QLineEdit()
+        self._search_edit.setAccessibleName("Поиск по списку")
         self._search_edit.setPlaceholderText("Поиск (Ctrl+F)")
         self._search_edit.setClearButtonEnabled(True)
         self._search_edit.setMaximumWidth(260)
         self._search_edit.textChanged.connect(self._on_search_changed)
+        self._search_edit.returnPressed.connect(self._focus_results)
         search_row.addWidget(self._search_edit)
+
+        self._reset_button = QPushButton("Сбросить")
+        self._reset_button.setAccessibleName("Сбросить поиск и отбор")
+        self._reset_button.setToolTip("Сбросить поиск и отбор")
+        self._reset_button.clicked.connect(self._reset_search_and_filters)
+        self._reset_button.hide()
+        search_row.addWidget(self._reset_button)
         search_row.addStretch()
 
         self._count_label = QLabel("")
@@ -374,17 +384,36 @@ class ListView(QWidget):
         if getattr(self._entity_class, "__list_order__", None):
             self._table.sortByColumn(-1, Qt.SortOrder.AscendingOrder)
         self._table.doubleClicked.connect(self._on_double_click)
-        layout.addWidget(self._table)
+        layout.addWidget(self._table, 1)
+
+        self._empty_label = QLabel()
+        self._empty_label.setObjectName("emptyResults")
+        self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_label.setWordWrap(True)
+        self._empty_label.hide()
+        layout.addWidget(self._empty_label, 1)
 
         hdr = self._table.horizontalHeader()
         hdr.setStretchLastSection(not self._filters)
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
 
         # Shortcuts
-        QShortcut(QKeySequence("Ctrl+F"), self, self._search_edit.setFocus)
-        QShortcut(QKeySequence("F5"), self, self.refresh)
-        QShortcut(QKeySequence("Delete"), self._table, lambda: self._on_action("Delete"))
-        QShortcut(QKeySequence("Return"), self._table, self._on_double_click)
+        descendants = Qt.ShortcutContext.WidgetWithChildrenShortcut
+        list_context = descendants if self._filters else Qt.ShortcutContext.WindowShortcut
+        for key, parent, context, callback in (
+            ("Ctrl+F", self, list_context, self._search_edit.setFocus),
+            ("F5", self, list_context, self.refresh),
+            ("Delete", self._table, descendants, lambda: self._on_action("Delete")),
+            ("Return", self._table, descendants, self._on_double_click),
+            ("Enter", self._table, descendants, self._on_double_click),
+        ):
+            shortcut = QShortcut(QKeySequence(key), parent)
+            shortcut.setContext(context)
+            shortcut.activated.connect(callback)
+        self._clear_search_shortcut = QShortcut(QKeySequence("Escape"), self._search_edit)
+        self._clear_search_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+        self._clear_search_shortcut.activated.connect(self._search_edit.clear)
+        self._clear_search_shortcut.setEnabled(False)
 
         self._update_button_states()
 
@@ -395,14 +424,17 @@ class ListView(QWidget):
     def refresh(self) -> None:
         """Reload data from the database and rebuild the table."""
         try:
+            selected = self._selected_entity()
             filters = dict(self._filters or {})
             for name, (operator, value) in self._field_filters.items():
                 if self._db.can_read_field(self._entity_class, name):
                     filters[f"{name}__{operator}"] = value
             self._items = self._db.filter(self._entity_class, **filters) if filters else self._db.list(self._entity_class)
             self._rebuild_model()
+            if selected is not None and selected.id is not None:
+                self._select_entity_by_id(selected.id)
         except Exception as exc:
-            QMessageBox.critical(self, "Ошибка", str(exc))
+            show_ui_error(self, "Ошибка", exc)
 
     def _build_ref_lookup(self, visible_fields: list[tuple[str, Field]]) -> dict[str, dict[int, str]]:
         """Batch-fetch FK labels so list cells display human-readable names cleanly."""
@@ -425,7 +457,13 @@ class ListView(QWidget):
                         lbl = str(target_obj)
                     mapping[target_obj._id] = lbl
                 cache[name] = mapping
-            except Exception:
+            except (SQLAlchemyError, RuntimeError, LookupError, PermissionError, ValueError, TypeError):
+                logging.getLogger(__name__).warning(
+                    "Не удалось загрузить справочник для поля %s.%s",
+                    self._entity_class.__name__,
+                    name,
+                    exc_info=True,
+                )
                 cache[name] = {}
         return cache
 
@@ -482,13 +520,19 @@ class ListView(QWidget):
                 if field.currency:
                     text = f"{text} {field.currency}"
                 return text, float(dec)
-            except Exception:
+            except (InvalidOperation, ValueError, TypeError, OverflowError):
+                logging.getLogger(__name__).warning(
+                    "Некорректное десятичное значение %r для поля %s", val, name, exc_info=True,
+                )
                 return str(val), str(val)
 
         if isinstance(field, IntegerField):
             try:
                 return str(val), int(val)
-            except Exception:
+            except (ValueError, TypeError, OverflowError):
+                logging.getLogger(__name__).warning(
+                    "Некорректное целочисленное значение %r для поля %s", val, name, exc_info=True,
+                )
                 return str(val), str(val)
 
         s = str(val)
@@ -524,7 +568,9 @@ class ListView(QWidget):
 
         source_model = _TableModel(headers, rows, self._items, sort_rows=sort_rows)
         self._proxy.setSourceModel(source_model)
-        self._table.setModel(self._proxy)
+        if self._table.model() is None:
+            self._table.setModel(self._proxy)
+            self._table.selectionModel().currentChanged.connect(self._update_button_states)
         self._table.resizeColumnsToContents()
         for column in range(len(headers)):
             width = self._table.columnWidth(column)
@@ -533,14 +579,10 @@ class ListView(QWidget):
         if self._filters and headers:
             self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
 
-        sel_model = self._table.selectionModel()
-        if sel_model is not None:
-            sel_model.currentChanged.connect(lambda *_: self._update_button_states())
-
         sort_field = getattr(self._entity_class, "__list_order__", None)
         if sort_field and self._table.horizontalHeader().sortIndicatorSection() < 0:
             self._sort_by_field(sort_field, visible_fields)
-        self._update_count_label()
+        self._update_results()
         self._update_button_states()
 
     def _sort_by_field(self, name: str, fields: list[tuple[str, Field]]) -> None:
@@ -675,22 +717,47 @@ class ListView(QWidget):
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
         if dialog.exec():
-            self._update_filter_button()
             self.refresh()
         dialog.deleteLater()
 
     def _on_search_changed(self, text: str) -> None:
         self._proxy.setFilterFixedString(text)
-        self._update_count_label()
+        self._clear_search_shortcut.setEnabled(bool(text))
+        self._update_results()
         self._update_button_states()
 
-    def _update_count_label(self) -> None:
+    def _focus_results(self) -> None:
+        if not self._proxy.rowCount() or not self._proxy.columnCount():
+            return
+        if not self._table.currentIndex().isValid():
+            self._table.setCurrentIndex(self._proxy.index(0, 0))
+        self._table.setFocus()
+
+    def _reset_search_and_filters(self) -> None:
+        had_filters = bool(self._field_filters)
+        self._field_filters.clear()
+        self._search_edit.clear()
+        if had_filters:
+            self.refresh()
+        self._search_edit.setFocus()
+
+    def _update_results(self) -> None:
         total = len(self._items)
         shown = self._proxy.rowCount()
         if shown == total:
             self._count_label.setText(f"Записей: {total}")
         else:
             self._count_label.setText(f"Показано: {shown} из {total}")
+
+        filter_count = sum(name in self._list_field_names for name in self._field_filters)
+        self._filters_button.setText(f"Отбор ({filter_count})…" if filter_count else "Отбор…")
+        narrowed = bool(self._search_edit.text() or self._field_filters)
+        self._reset_button.setVisible(narrowed)
+        self._empty_label.setText(
+            "По текущим условиям ничего не найдено." if narrowed else "Здесь пока нет записей."
+        )
+        self._empty_label.setVisible(shown == 0)
+        self._table.setVisible(shown > 0)
 
     def _update_button_states(self) -> None:
         selected = self._selected_entity()
@@ -730,19 +797,11 @@ class ListView(QWidget):
         try:
             self._save_csv_file("Сохранить шаблон CSV", catalog_csv_template(self._entity_class, self._db))
         except (OSError, ValueError) as exc:
-            QMessageBox.warning(self, "Шаблон CSV", str(exc))
+            show_ui_error(self, "Шаблон CSV", exc, warning=True)
 
     @staticmethod
     def _csv_cell(value: Any) -> str:
-        text = "" if value is None else str(value)
-        if text.lstrip().startswith(("=", "+", "-", "@")) or text.startswith(("\t", "\r", "\n")):
-            try:
-                if Decimal(text).is_finite():
-                    return text
-            except ArithmeticError:
-                pass
-            return "'" + text
-        return text
+        return sanitize_csv_cell(value)
 
     def _export_list_csv(self) -> None:
         if not self._db.allows(self._entity_class, "read"):
@@ -764,7 +823,7 @@ class ListView(QWidget):
         try:
             self._save_csv_file("Выгрузить список в CSV", stream.getvalue().encode("utf-8-sig"))
         except OSError as exc:
-            QMessageBox.warning(self, "Выгрузка CSV", str(exc))
+            show_ui_error(self, "Выгрузка CSV", exc, warning=True)
 
     def _map_csv_columns(
         self, headers: list[str], fields: dict[str, str],
@@ -887,7 +946,7 @@ class ListView(QWidget):
                 self.refresh()
                 self.data_changed.emit()
         except Exception as exc:
-            QMessageBox.warning(self, "Импорт CSV", str(exc))
+            show_ui_error(self, "Импорт CSV", exc, warning=True)
 
     def _on_action(self, action: str) -> None:
         if action == "New" and self._db.allows(self._entity_class, "create"):
@@ -924,10 +983,7 @@ class ListView(QWidget):
                 self.refresh()
                 self.data_changed.emit()
             except Exception as exc:
-                msg = str(exc)
-                if "FOREIGN KEY constraint" in msg:
-                    msg = "Нельзя удалить запись, так как она используется в других документах или справочниках."
-                QMessageBox.warning(self, "Не удалось удалить", msg)
+                show_ui_error(self, "Не удалось удалить", exc, warning=True)
 
         elif action == "Refresh":
             self.refresh()

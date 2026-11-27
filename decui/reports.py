@@ -7,6 +7,7 @@ import datetime
 import io
 from abc import ABC
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
 
 if TYPE_CHECKING:
@@ -81,6 +82,19 @@ def calc_aggregate(values: list[Any], agg: str) -> str:
     return ""
 
 
+def sanitize_csv_cell(value: Any) -> str:
+    """Neutralize spreadsheet formula prefixes while keeping finite numbers intact."""
+    text = "" if value is None else str(value)
+    if text.lstrip().startswith(("=", "+", "-", "@")) or text.startswith(("\t", "\r", "\n")):
+        try:
+            if Decimal(text).is_finite():
+                return text
+        except ArithmeticError:
+            pass
+        return "'" + text
+    return text
+
+
 def group_report_rows(
     rows: list[dict[str, Any]], columns: list[Column], groups: tuple[str, ...],
 ) -> list[dict[str, Any]]:
@@ -145,11 +159,18 @@ def register_report_rows(
     for name in columns:
         dimension = meta.dimensions.get(name)
         if isinstance(dimension, RefDimension):
-            ids = {row[name] for row in rows if row[name] is not None}
+            from .orm import _chunked
+
+            ids = [row[name] for row in rows if row[name] is not None]
             if not ids:
                 continue
-            entities = db.filter(dimension.resolve_target(), id__in=ids)
-            labels = {item.id: str(item) for item in entities}
+            target = dimension.resolve_target()
+            labels: dict[int, str] = {}
+            for batch in _chunked(dict.fromkeys(ids), 500):
+                entities = db.filter(target, id__in=batch)
+                for item in entities:
+                    if item.id is not None:
+                        labels[item.id] = str(item)
             for row in rows:
                 if row[name] is not None:
                     if name in groups:
@@ -271,7 +292,7 @@ class ChoiceParam(ReportParam):
 
 
 class RefParam(ReportParam):
-    """Reference filter → QComboBox populated from an entity."""
+    """Reference filter, optionally prefilled when opening from a record card."""
 
     target: type | str
     representation_field: str | None = None
@@ -284,10 +305,12 @@ class RefParam(ReportParam):
         representation_field: str | None = None,
         required: bool = False,
         default: Any = None,
+        from_record: bool = False,
     ) -> None:
         super().__init__(display_name, required=required, default=default)
         self.target = target
         self.representation_field = representation_field
+        self.from_record = from_record
 
     def resolve_target(self) -> type:
         if isinstance(self.target, str):
@@ -369,17 +392,21 @@ class Report:
     ) -> str:
         buf = io.StringIO()
         writer = csv.writer(buf, delimiter=";")
-        writer.writerow([c.title for c in cols])
+        writer.writerow([sanitize_csv_cell(c.title) for c in cols])
         for row in group_report_rows(rows, cols, groups):
             writer.writerow([
-                row.get("_group_label") if c.field == row.get("_group_field") else row.get(c.field, "")
+                sanitize_csv_cell(
+                    row.get("_group_label") if c.field == row.get("_group_field") else row.get(c.field, "")
+                )
                 for c in cols
             ])
         if (groups or include_totals) and rows and any(c.aggregate for c in cols):
             label_field = groups[0] if groups else cols[0].field
             writer.writerow([
-                calc_aggregate([row.get(c.field) for row in rows], c.aggregate)
-                if c.aggregate else ("Итого" if c.field == label_field else "")
+                sanitize_csv_cell(
+                    calc_aggregate([row.get(c.field) for row in rows], c.aggregate)
+                    if c.aggregate else ("Итого" if c.field == label_field else "")
+                )
                 for c in cols
             ])
         content = buf.getvalue()

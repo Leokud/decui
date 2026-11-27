@@ -541,6 +541,8 @@ set_current_account(Account('clerk', 'clerk'))
 record = db.get(Invoice, invoice.id)
 assert record.private_note is None and record.Items[0]['price'] is None
 assert db.list(Invoice)[0].private_note is None
+record = db.filter(Invoice, include_table_parts=True)[0]
+assert record.private_note is None and record.Items[0]['price'] is None
 assert Notes().execute(db)[0]['private_note'] is None
 assert get_balance(db, Stock)[0]['quantity'] == 0
 assert not db.can_post(record)

@@ -78,6 +78,137 @@ def test_report_execution():
     assert rows[1]["name"] == "Андрей"
 
 
+def test_report_requires_current_results_for_csv_and_refreshes_empty_results(tmp_path, monkeypatch):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
+
+    from decui.ui.report_view import ReportView
+
+    app = QApplication.instance() or QApplication([])
+    db = Database.memory()
+    db.seed([Client(name="Алексей"), Client(name="Борис")])
+    view = ReportView(ClientReport, db)
+    target = tmp_path / "clients.csv"
+    exports = []
+    errors = []
+
+    def choose_file(*args):
+        exports.append(args)
+        return str(target), ""
+
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", choose_file)
+    monkeypatch.setattr(QMessageBox, "information", lambda *_args: None)
+    monkeypatch.setattr(QMessageBox, "critical", lambda *_args: errors.append(_args[-1]))
+    field = view._param_widgets["prefix_filter"]
+    view.show()
+    view.activateWindow()
+    field.setFocus()
+    app.processEvents()
+    try:
+        assert not view._export_btn.isEnabled()
+        field.setText("А")
+        QTest.keyClick(field, Qt.Key.Key_F5)
+        assert view._export_btn.isEnabled()
+        assert [row["name"] for row in view._last_rows] == ["Алексей"]
+
+        field.setText("Б")
+        assert not view._result_notice.isHidden()
+        assert not view._export_btn.isEnabled()
+        view.refresh()
+        assert [row["name"] for row in view._last_rows] == ["Алексей"]
+        view._export_csv()
+        assert not exports
+
+        field.setText("А")
+        assert view._result_notice.isHidden()
+        assert view._export_btn.isEnabled()
+        field.setText("Б")
+        QTest.keyClick(field, Qt.Key.Key_F5)
+        view._export_csv()
+        assert len(exports) == 1
+        content = target.read_text(encoding="utf-8-sig")
+        assert "Борис" in content
+        assert "Алексей" not in content
+
+        def fail(*args, **kwargs):
+            raise ValueError("Ошибка проверки")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(view._report_instance, "execute", fail)
+            field.setText("А")
+            view._generate()
+            assert not view._export_btn.isEnabled()
+            field.setText("Б")
+            assert view._export_btn.isEnabled()
+
+            view._generate()
+            assert errors and "Ошибка проверки" in errors[-1]
+            assert "предыдущий результат" in view._result_notice.text()
+            assert not view._export_btn.isEnabled()
+            assert [row["name"] for row in view._last_rows] == ["Борис"]
+
+        field.setText("В")
+        view._generate()
+        assert view._result_notice.isHidden()
+        assert view._no_data_label.text() == "Нет данных по применённым параметрам."
+        assert not view._export_btn.isEnabled()
+        db.save(Client(name="Вера"))
+        view.refresh()
+        assert view._no_data_label.isHidden()
+        assert view._export_btn.isEnabled()
+        assert [row["name"] for row in view._last_rows] == ["Вера"]
+    finally:
+        view.close()
+
+
+def test_report_marks_variants_dates_and_removed_references_as_unapplied():
+    from PySide6.QtWidgets import QApplication
+
+    from decui.ui.report_view import ReportView
+
+    class ContextReport(Report):
+        auto_run = True
+        customer = RefParam("Клиент", Client)
+        date = DateParam("Дата", required=False)
+        columns = [Column("Клиент", "name")]
+
+        def execute(self, db, customer=None, date=None):
+            clients = db.filter(Client, id=customer) if customer is not None else db.list(Client)
+            return [{"name": client.name} for client in clients]
+
+    app = QApplication.instance() or QApplication([])
+    db = Database.memory()
+    client = db.save(Client(name="Алексей"))
+    db.save(Client(name="Борис"))
+    db.save_report_variant("ContextReport", "Все клиенты", {"params": {"customer": None, "date": None}})
+    view = ReportView(ContextReport, db, initial_refs={"customer": client.id})
+    assert view._export_btn.isEnabled()
+
+    date_editor = view._param_widgets["date"]
+    date_editor.checkbox.setChecked(True)
+    assert not view._export_btn.isEnabled()
+    date_editor.checkbox.setChecked(False)
+    assert view._export_btn.isEnabled()
+
+    view._apply_variant(view._variant_picker.findData("Все клиенты"))
+    assert not view._export_btn.isEnabled()
+    assert [row["name"] for row in view._last_rows] == ["Алексей"]
+    customer_editor = view._param_widgets["customer"]
+    customer_editor.setCurrentIndex(customer_editor.findData(client.id))
+    assert view._export_btn.isEnabled()
+
+    db.delete(client)
+    view.refresh()
+    assert customer_editor.currentData() is None
+    assert not view._export_btn.isEnabled()
+    assert not view._result_notice.isHidden()
+    view._generate()
+    assert view._export_btn.isEnabled()
+    assert [row["name"] for row in view._last_rows] == ["Борис"]
+    app.processEvents()
+
+
 def test_report_variants_restore_parameters_after_reopen_and_are_private(tmp_path, monkeypatch):
     from PySide6.QtCore import QDate
     from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox
@@ -270,3 +401,57 @@ def test_report_variant_restores_sort_by_field_and_csv_matches(tmp_path, monkeyp
     restored._export_csv()
     assert target.read_text(encoding="utf-8-sig").splitlines() == ["Количество;Товар", "10;Б", "2;А", "1;В"]
     app.processEvents()
+
+
+def test_register_report_rows_chunks_id_in_batches(monkeypatch):
+    from decui import RefDimension, history_register, set_record
+    from decui.movement import Resource
+    from decui.reports import register_report_rows
+
+    @history_register
+    class ClientRates:
+        client = RefDimension(Client, "Клиент")
+        rate = Resource("Ставка", field_type=Decimal)
+
+    db = Database.memory()
+    clients = db.seed([Client(name=f"Клиент {i}") for i in range(1050)])
+    for idx, client in enumerate(clients):
+        set_record(
+            db,
+            ClientRates,
+            dimensions={"client": client.id},
+            resources={"rate": Decimal(idx + 1)},
+            period=datetime.date(2026, 6, 1),
+        )
+
+    batch_sizes: list[int] = []
+    orig_filter = db.filter
+
+    def spy_filter(entity_class, **kwargs):
+        if "id__in" in kwargs:
+            batch_sizes.append(len(kwargs["id__in"]))
+        return orig_filter(entity_class, **kwargs)
+
+    monkeypatch.setattr(db, "filter", spy_filter)
+    rows = register_report_rows(db, ClientRates, ["client", "rate"], order_by="rate")
+    assert batch_sizes == [500, 500, 50]
+    assert len(rows) == 1050
+    assert rows[0]["client"] == "Клиент 0"
+    assert rows[-1]["client"] == "Клиент 1049"
+
+
+def test_report_csv_sanitizes_formula_injection_preserving_negative_numbers():
+    class FormulaReport(Report):
+        columns = [
+            Column("Текст", "label"),
+            Column("Сумма", "amount", aggregate="sum"),
+        ]
+
+    rows = [
+        {"label": "=SUM(A1:A2)", "amount": Decimal("-12.50")},
+        {"label": "+cmd|' /C calc'!A0", "amount": Decimal("2.50")},
+    ]
+    lines = FormulaReport.to_csv(rows).splitlines()
+    assert lines[0] == "Текст;Сумма"
+    assert lines[1] == "'=SUM(A1:A2);-12.50"
+    assert lines[2] == "'+cmd|' /C calc'!A0;2.50"

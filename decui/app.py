@@ -5,11 +5,11 @@ import html
 import logging
 import re
 import sqlite3
-import traceback
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from PySide6.QtCore import QStandardPaths, Qt
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -27,9 +27,9 @@ from PySide6.QtWidgets import (
 from sqlalchemy.exc import SQLAlchemyError
 
 from decui.accounts import Account, AccountStore, current_account, set_current_account
-from decui.diagnostics import report_preview_exception
 from decui.orm import Database
 from decui.sequence import current_role, set_role
+from decui.ui.editors import show_ui_error
 from decui.ui.form import AutoForm
 from decui.ui.listview import ListView, ListViewState
 from decui.ui.navigation import NavigationPanel
@@ -41,15 +41,7 @@ if TYPE_CHECKING:
 
 
 def _show_error(parent: QWidget | None, title: str, exc: Exception | str) -> None:
-    msg = QMessageBox(parent)
-    msg.setIcon(QMessageBox.Icon.Critical)
-    msg.setWindowTitle(title)
-    msg.setText(str(exc))
-    tb = traceback.format_exc()
-    if tb and tb.strip() != "NoneType: None":
-        msg.setDetailedText(tb)
-        report_preview_exception()
-    msg.exec()
+    show_ui_error(parent, title, exc)
 
 
 class ERPApplication:
@@ -140,7 +132,7 @@ class ERPApplication:
         try:
             destination = self._db.backup(path)
         except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
-            QMessageBox.warning(self._main_window, "Резервная копия", str(exc))
+            show_ui_error(self._main_window, "Резервная копия", exc, warning=True)
             return
         self._main_window.statusBar().showMessage(f"Резервная копия сохранена: {destination}", 7000)
 
@@ -294,7 +286,10 @@ class _MainWindow(QMainWindow):
         except (SQLAlchemyError, RuntimeError):
             logging.getLogger(__name__).warning("Не удалось сохранить настройки списка", exc_info=True)
 
-    def closeEvent(self, event) -> None:
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if not self._confirm_leave_active_form():
+            event.ignore()
+            return
         self._remember_active_list()
         super().closeEvent(event)
 
@@ -310,21 +305,8 @@ class _MainWindow(QMainWindow):
 
     def _confirm_leave_active_form(self) -> bool:
         """Ask user before discarding unsaved edits on an open AutoForm."""
-        if isinstance(self._active_widget, AutoForm) and self._active_widget.has_unsaved_changes():
-            ans = QMessageBox.question(
-                self,
-                "Несохранённые изменения",
-                "В открытой форме есть несохранённые изменения. Сохранить их?",
-                QMessageBox.StandardButton.Yes
-                | QMessageBox.StandardButton.No
-                | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Yes,
-            )
-            if ans == QMessageBox.StandardButton.Cancel:
-                return False
-            if ans == QMessageBox.StandardButton.Yes:
-                return self._active_widget._save()
-        return True
+        form = self._active_widget
+        return not isinstance(form, AutoForm) or form._confirm_close()
 
     def _show_welcome(self) -> None:
         from decui.registry import get_all_entities, get_all_reports
@@ -421,9 +403,7 @@ class _MainWindow(QMainWindow):
             )
             self._active_widget = list_view
             self._content_layout.addWidget(list_view)
-            self.statusBar().showMessage(
-                f"{entity_class._meta.verbose_name} · записей: {len(list_view._items)}"
-            )
+            self.statusBar().showMessage(entity_class._meta.verbose_name)
         except Exception as exc:
             _show_error(self, "Ошибка открытия", exc)
 

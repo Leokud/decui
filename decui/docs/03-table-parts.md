@@ -25,21 +25,26 @@ class Items:
 
 ## Доступ из кода
 
+`db.list()` и `db.filter()` по умолчанию читают шапки записей. Перед
+редактированием, командой или проведением загрузите запись со строками
+через `db.get(Класс, id)` либо передайте `include_table_parts=True` в выборку.
+Попытка записать одну шапку вызовет `ValueError`.
+Чтобы удалить все строки, очистите коллекцию у полностью загруженной записи и сохраните её.
+
 ```python
-# Чтение
-for row in self._table_data.get("Items", []):
-    print(row["product"], row["quantity"], row["price"])
-
-# Запись
-self._table_data["Items"] = [
-    {"product": 1, "quantity": 10, "price": Decimal("500"), "amount": Decimal("0")},
-]
-
-# Добавление строки
-self._table_data.setdefault("Items", []).append(
-    {"product": 1, "quantity": 1, "price": Decimal("100"), "amount": Decimal("0")}
-)
+# product — сохранённый товар, order — документ со строками Items.
+order.Items.add(product=product.id, quantity=2, price=Decimal("12.50"))
+for row in order.Items:
+    row["amount"] = row["quantity"] * row["price"]
+total = order.Items.total("amount")
 ```
+
+В [заказе поставщику](../../examples/features/purchase_orders.py)
+`order.Items.add(product=product.id, quantity=2)` добавляет строку.
+`before_save(db)` перебирает `self.Items` и записывает цену в `unit_price`.
+Соглашение для автоподстановки текущей цены в редакторе использует колонку
+`price`. В учебном заказе `unit_price` заполняет правило сохранения.
+После присвоения сумм `self.Items.total("amount")` даёт итог документа.
 
 ## Имена полей в табличной части
 

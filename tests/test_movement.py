@@ -105,3 +105,46 @@ def test_history_register_and_queries():
     assert latest is not None
     assert latest["item"] == "Gadget-X"
     assert Decimal(str(latest["price"])) == Decimal("109.90")
+
+
+def test_register_queries_validate_ready_and_filters(tmp_path):
+    bad_file = tmp_path / "not_a_db.sqlite3"
+    bad_file.write_text("not sqlite", encoding="utf-8")
+    broken_db = Database(str(bad_file))
+    assert not broken_db._ready
+
+    for fn in (get_balance, get_ledger_balance, get_records, get_latest):
+        with pytest.raises(RuntimeError, match="База данных не инициализирована"):
+            fn(broken_db, StockRegister)
+
+    db = Database.memory()
+    with pytest.raises(ValueError, match="Неизвестное измерение"):
+        get_balance(db, StockRegister, missing_dim="A")
+    with pytest.raises(ValueError, match="Неизвестное измерение"):
+        get_ledger_balance(db, StockRegister, missing_dim="A")
+    with pytest.raises(ValueError, match="Неизвестное измерение группировки"):
+        get_balance(db, StockRegister, group_by=["missing_dim"])
+    with pytest.raises(ValueError, match="Неизвестное измерение"):
+        get_records(db, PriceHistory, missing_dim="A")
+    with pytest.raises(ValueError, match="Неизвестное измерение"):
+        get_latest(db, PriceHistory, missing_dim="A")
+
+
+def test_multiple_databases_isolate_register_models():
+    db1 = Database.memory()
+    db2 = Database.memory()
+    assert db1._get_register_model(StockRegister) is not db2._get_register_model(StockRegister)
+
+    write_movements(db1, [
+        Movement(
+            register=StockRegister,
+            period=datetime.date(2026, 6, 1),
+            dimensions={"item": "OnlyIn1", "warehouse": "W1"},
+            resources={"quantity": Decimal("5")},
+            is_income=True,
+            doc_id=1,
+            doc_type="Receipt",
+        )
+    ])
+    assert get_balance(db1, StockRegister)[0]["quantity"] == Decimal("5.00")
+    assert get_balance(db2, StockRegister)[0]["quantity"] == Decimal("0.00")

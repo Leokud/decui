@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import datetime
+import logging
+import sqlite3
+import sys
+import traceback
 from decimal import Decimal
 from typing import Any, cast
 
@@ -16,12 +20,15 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLineEdit,
+    QMessageBox,
     QPlainTextEdit,
     QSpinBox,
     QTimeEdit,
     QWidget,
 )
+from sqlalchemy.exc import SQLAlchemyError
 
+from decui.diagnostics import report_preview_exception
 from decui.fields import (
     BooleanField,
     ChoiceField,
@@ -36,6 +43,150 @@ from decui.fields import (
 )
 
 _NULL_SENTINEL = "—"
+_ORIG_CRITICAL = QMessageBox.critical
+_ORIG_WARNING = QMessageBox.warning
+
+_SQL_TEXT_MARKERS = (
+    "ошибка sql",
+    "[sql:",
+    "(sqlite3.",
+    "constraint failed",
+    "sqlalchemy",
+    "operationalerror",
+    "integrityerror",
+    "database is locked",
+    "database table is locked",
+    "no such table",
+    "no such column",
+    "foreign key constraint",
+)
+
+
+def _iter_exception_chain(exc: BaseException) -> list[BaseException]:
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        chain.append(cur)
+        cur = cur.__cause__ or cur.__context__
+    return chain
+
+
+def format_ui_error(exc: BaseException | str) -> str:
+    """Convert raw SQLAlchemy/SQLite errors into user-friendly Russian text."""
+    if isinstance(exc, str):
+        raw = exc.strip()
+        lower = raw.lower()
+        if not any(marker in lower for marker in _SQL_TEXT_MARKERS):
+            return raw or "Произошла непредвиденная ошибка."
+        combined_lower = lower
+    else:
+        raw = str(exc).strip()
+        lower = raw.lower()
+        chain = _iter_exception_chain(exc)
+        is_sql = isinstance(exc, (SQLAlchemyError, sqlite3.Error)) or any(
+            marker in lower for marker in _SQL_TEXT_MARKERS
+        )
+        if not is_sql:
+            return raw or f"Произошла ошибка ({type(exc).__name__})."
+        combined_lower = "\n".join(str(item).lower() for item in chain)
+
+    if "foreign key constraint" in combined_lower or "foreignkey" in combined_lower:
+        return "Нельзя выполнить операцию: запись используется в других документах или справочниках."
+    if "unique constraint" in combined_lower or "unique failed" in combined_lower:
+        return "Запись с такими уникальными значениями уже существует."
+    if "not null constraint" in combined_lower:
+        return "Не заполнено обязательное поле."
+    if "check constraint" in combined_lower:
+        return "Значение не соответствует ограничениям базы данных."
+    if (
+        "database is locked" in combined_lower
+        or "database table is locked" in combined_lower
+        or "sqlite_busy" in combined_lower
+    ):
+        return "База данных временно занята другой операцией. Повторите попытку."
+    if "attempt to write a readonly database" in combined_lower or "readonly database" in combined_lower:
+        return "База данных открыта только для чтения."
+    if "no such table" in combined_lower or "no such column" in combined_lower:
+        return "Структура базы данных устарела или не соответствует приложению."
+    return "Ошибка при обращении к базе данных. Подробности доступны в деталях ошибки."
+
+
+def _error_details(exc: BaseException | str) -> str | None:
+    parts: list[str] = []
+    if isinstance(exc, BaseException):
+        raw = str(exc).strip()
+        if raw and raw != format_ui_error(exc):
+            parts.append(raw)
+        tb = traceback.format_exc()
+        if not tb or tb.strip() == "NoneType: None":
+            if exc.__traceback__ is not None:
+                tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+            else:
+                tb = ""
+        if tb and tb.strip() != "NoneType: None":
+            parts.append(tb.strip())
+    elif exc.strip() and exc.strip() != format_ui_error(exc):
+        parts.append(exc.strip())
+    return "\n\n".join(parts) if parts else None
+
+
+def show_ui_error(
+    parent: QWidget | None,
+    title: str,
+    exc: BaseException | str,
+    *,
+    prefix: str = "",
+    warning: bool = False,
+) -> None:
+    """Show a user-friendly error dialog with technical details tucked away."""
+    message = f"{prefix}{format_ui_error(exc)}"
+    details = _error_details(exc)
+    if sys.exc_info()[0] is not None:
+        report_preview_exception()
+    if details:
+        logging.getLogger(__name__).warning("%s: %s", title, message)
+    if warning and QMessageBox.warning is not _ORIG_WARNING:
+        QMessageBox.warning(parent, title, message)
+        return
+    if not warning and QMessageBox.critical is not _ORIG_CRITICAL:
+        QMessageBox.critical(parent, title, message)
+        return
+    msg = QMessageBox(parent)
+    msg.setIcon(QMessageBox.Icon.Warning if warning else QMessageBox.Icon.Critical)
+    msg.setWindowTitle(title)
+    msg.setText(message)
+    if details:
+        msg.setDetailedText(details)
+    msg.exec()
+
+
+class _RefEditor(QComboBox):
+    """Keep a stored key when the current user cannot select its record."""
+
+    def __init__(self, parent: QWidget | None) -> None:
+        super().__init__(parent)
+        self.preserved_id: int | None = None
+        self.currentIndexChanged.connect(self._selection_changed)
+
+    def set_reference(self, value: int | None, preserve_unavailable: bool) -> None:
+        index = self.findData(value)
+        self._preserve(value if index < 0 and preserve_unavailable else None)
+        self.setCurrentIndex(index if self.preserved_id is not None else max(0, index))
+
+    def _selection_changed(self, index: int) -> None:
+        if index >= 0 and self.preserved_id is not None:
+            self._preserve(None)
+
+    def _preserve(self, value: int | None) -> None:
+        self.preserved_id = value
+        message = "Сохранённая ссылка недоступна для выбора. Можно выбрать замену." if value is not None else ""
+        self.setPlaceholderText(message)
+        self.setToolTip(message)
+        self.setAccessibleDescription(message)
+        if self.lineEdit() is not None:
+            self.lineEdit().setPlaceholderText(message)
 
 
 def create_editor(field: Field, parent: QWidget | None = None) -> QWidget:
@@ -71,7 +222,7 @@ def create_editor(field: Field, parent: QWidget | None = None) -> QWidget:
     raise TypeError(f"No editor for field type: {type(field).__name__}")
 
 
-def get_editor_value(widget: Any, field: Field) -> Any:
+def get_editor_value(widget: Any, field: Field, *, preserve_unavailable: bool = False) -> Any:
     """Read the current value from an editor widget."""
     if isinstance(field, StringField):
         if getattr(field, "multiline", False) or isinstance(widget, QPlainTextEdit):
@@ -134,21 +285,20 @@ def get_editor_value(widget: Any, field: Field) -> Any:
 
     if isinstance(field, RefField):
         w = cast(QComboBox, widget)
-        if w.isEditable() and not w.currentText().strip():
-            return None
-        data = w.currentData(Qt.ItemDataRole.UserRole)
-        if data is not None:
-            return data
+        if preserve_unavailable and isinstance(w, _RefEditor) and w.currentIndex() < 0 and not w.currentText():
+            return w.preserved_id
         if w.isEditable():
-            idx = w.findText(w.currentText())
-            if idx >= 0:
-                return w.itemData(idx, Qt.ItemDataRole.UserRole)
-        return None
+            text = w.currentText()
+            if not text.strip():
+                return None
+            if text != w.itemText(w.currentIndex()):
+                return w.itemData(w.findText(text), Qt.ItemDataRole.UserRole)
+        return w.currentData(Qt.ItemDataRole.UserRole)
 
     raise TypeError(f"No reader for field type: {type(field).__name__}")
 
 
-def set_editor_value(widget: Any, field: Field, value: Any) -> None:
+def set_editor_value(widget: Any, field: Field, value: Any, *, preserve_unavailable: bool = False) -> None:
     """Set the value of an editor widget from a Python value."""
     if isinstance(field, StringField):
         val_str = str(value) if value is not None else ""
@@ -200,25 +350,34 @@ def set_editor_value(widget: Any, field: Field, value: Any) -> None:
 
     elif isinstance(field, DateField):
         w = cast(QDateEdit, widget)
-        if isinstance(value, datetime.datetime):
-            w.setDate(QDate(value.year, value.month, value.day))
-        elif isinstance(value, datetime.date):
-            w.setDate(QDate(value.year, value.month, value.day))
+        resolved = (
+            field.default() if callable(field.default) else field.default
+        ) if value is None and field.default is not None else value
+        if isinstance(resolved, datetime.datetime):
+            w.setDate(QDate(resolved.year, resolved.month, resolved.day))
+        elif isinstance(resolved, datetime.date):
+            w.setDate(QDate(resolved.year, resolved.month, resolved.day))
         else:
             w.setDate(QDate.currentDate())
 
     elif isinstance(field, DateTimeField):
         w = cast(QDateTimeEdit, widget)
-        if isinstance(value, datetime.datetime):
-            w.setDateTime(value.replace(second=0, microsecond=0))
-        elif isinstance(value, datetime.date):
-            w.setDateTime(datetime.datetime.combine(value, datetime.time(0, 0)))
+        resolved = (
+            field.default() if callable(field.default) else field.default
+        ) if value is None and field.default is not None else value
+        if isinstance(resolved, datetime.datetime):
+            w.setDateTime(resolved.replace(second=0, microsecond=0))
+        elif isinstance(resolved, datetime.date):
+            w.setDateTime(datetime.datetime.combine(resolved, datetime.time(0, 0)))
         else:
             w.setDateTime(datetime.datetime.now().replace(second=0, microsecond=0))
 
     elif isinstance(field, TimeField):
         w = cast(QTimeEdit, widget)
-        parsed = field.to_python(value) if isinstance(value, str) and value else value
+        resolved = (
+            field.default() if callable(field.default) else field.default
+        ) if value is None and field.default is not None else value
+        parsed = field.to_python(resolved) if isinstance(resolved, str) and resolved else resolved
         if isinstance(parsed, datetime.time):
             w.setTime(QTime(parsed.hour, parsed.minute))
         elif isinstance(parsed, datetime.datetime):
@@ -236,6 +395,9 @@ def set_editor_value(widget: Any, field: Field, value: Any) -> None:
                 cb.setChecked(cb.property("_choice_value") in selected)
 
     elif isinstance(field, RefField):
+        if isinstance(widget, _RefEditor):
+            widget.set_reference(value, preserve_unavailable)
+            return
         w = cast(QComboBox, widget)
         idx = w.findData(value, Qt.ItemDataRole.UserRole)
         if idx >= 0:
@@ -365,7 +527,7 @@ def _choice_editor(field: ChoiceField, parent: QWidget | None = None) -> QWidget
 
 
 def _ref_editor(field: RefField, parent: QWidget | None = None) -> QComboBox:
-    w = QComboBox(parent)
+    w = _RefEditor(parent)
     w.setEnabled(not field.read_only)
     if not field.read_only:
         w.setEditable(True)
@@ -385,7 +547,7 @@ def populate_ref_editor(
 ) -> None:
     """Fill a Ref combo-box with entity instances, preserving selection."""
     current_id = combo.currentData(Qt.ItemDataRole.UserRole)
-    combo.blockSignals(True)
+    signals_were_blocked = combo.blockSignals(True)
     combo.clear()
     combo.addItem("", None)
     for item in items:
@@ -401,4 +563,4 @@ def populate_ref_editor(
         idx = combo.findData(current_id, Qt.ItemDataRole.UserRole)
         if idx >= 0:
             combo.setCurrentIndex(idx)
-    combo.blockSignals(False)
+    combo.blockSignals(signals_were_blocked)

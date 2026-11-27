@@ -49,6 +49,20 @@ QTableView, QTableWidget {
     selection-background-color: #d6e8ff;
     selection-color: #142945;
 }
+QLabel#emptyResults {
+    background: #ffffff;
+    border: 1px solid #d6dfec;
+    border-radius: 6px;
+    font-size: 14px;
+    padding: 16px;
+}
+QLabel#reportNotice {
+    background: #fff6de;
+    color: #5a430e;
+    border: 1px solid #e5c77e;
+    border-radius: 6px;
+    padding: 8px 12px;
+}
 QHeaderView::section {
     background: #eaf0f8;
     color: #243c5d;

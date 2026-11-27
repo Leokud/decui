@@ -95,11 +95,16 @@ class StudioField:
     create_from: str = ""
     basis_fields: dict[str, str] = field(default_factory=dict)
     basis_tables: dict[str, BasisTable] = field(default_factory=dict)
+    choice_filter: dict[str, str] = field(default_factory=dict)
 
 
 def field_source(item: StudioField, owner: str, names: set[str], imports: set[str]) -> str:
     if item.kind not in FIELD_TYPES or not item.label.strip():
         raise ValueError(f"{owner}.{item.name}: проверьте тип и подпись.")
+    if item.choice_filter and (item.kind != "Ref" or not isinstance(item.choice_filter, dict)
+                              or not all(isinstance(name, str) and identifier(name)
+                                         for pair in item.choice_filter.items() for name in pair)):
+        raise ValueError(f"{owner}.{item.name}: проверьте соответствие полей choice_filter.")
     imports.add(item.kind)
     args = [repr(item.label)]
     if item.kind == "Ref":
@@ -108,6 +113,8 @@ def field_source(item: StudioField, owner: str, names: set[str], imports: set[st
         args.insert(0, repr(item.target))
         if item.related_list:
             args.append(f"related_list={item.related_list!r}")
+        if item.choice_filter:
+            args.append(f"choice_filter={item.choice_filter!r}")
         if item.create_from.strip():
             args.append(f"create_from={item.create_from.strip()!r}")
             if item.basis_fields:
@@ -704,6 +711,9 @@ class StudioProject:
             for item in entity.fields:
                 if item.visibility_field == old:
                     item.visibility_field = new
+                for target, source in item.choice_filter.items():
+                    if source == old:
+                        item.choice_filter[target] = new
             entity.list_columns = [new if name == old else name for name in entity.list_columns]
             if entity.list_order.removeprefix("-") == old:
                 entity.list_order = ("-" if entity.list_order.startswith("-") else "") + new
@@ -740,6 +750,7 @@ class StudioProject:
                     if destination is entity:
                         _rename_key(link.basis_fields, old, new)
                     if link.target == entity.name:
+                        _rename_key(link.choice_filter, old, new)
                         for target, source in link.basis_fields.items():
                             if source == old:
                                 link.basis_fields[target] = new
@@ -995,6 +1006,10 @@ class StudioProject:
                     if not identifier(item.name) or item.name in {"id", "parent_id"} or item.name in columns:
                         raise ValueError(f"{part.label}: недопустимая или повторяющаяся колонка «{item.name}».")
                     columns.add(item.name)
+                    if item.choice_filter:
+                        raise ValueError(
+                            f"{entity.name}.{part.name}.{item.name}: choice_filter доступен только в шапке карточки."
+                        )
                     lines.append("        " + field_source(item, part.name, names, imports))
             if entity.print_form is not None:
                 imports.add("PrintForm")

@@ -43,6 +43,10 @@ def test_decimal_field():
     assert f.to_python(15) == Decimal("15")
     assert len(f.validate(Decimal("-1.00"))) == 1
     assert len(f.validate(Decimal("100.50"))) == 0
+    for bad in (Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity")):
+        errs = f.validate(bad)
+        assert len(errs) == 1
+        assert "конечным числом" in errs[0]
 
 
 def test_boolean_field():
@@ -68,7 +72,13 @@ def test_time_field():
     t = datetime.time(14, 30)
     assert f.to_python(t) == t
     assert f.to_python("14:30") == t
+    assert f.to_python("9:05") == datetime.time(9, 5)
+    assert f.to_python("14:30:15") == datetime.time(14, 30, 15)
+    assert f.to_python("   ") is None
     assert f.to_python(None) is None
+    for invalid in ("14", "ab:cd", "25:00", "12:34:56:78", "-1:00"):
+        with pytest.raises(ValueError):
+            f.to_python(invalid)
 
 
 def test_choice_field():

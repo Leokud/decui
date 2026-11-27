@@ -109,6 +109,7 @@ class Invoice(Document):
 1. Вызывает `clear_movements()` при перепроведении
 2. Вызывает `write_movements()` после проведения
 3. Передаёт `doc_id` и `doc_type` для идентификации
+4. Очищает движения документа из всех регистров при `db.delete(doc)` или `db.unpost(doc)`
 
 ---
 
@@ -129,6 +130,8 @@ balance = get_balance(db, GoodsBalance, on_date=date(2026, 6, 1))
 # С группировкой
 balance = get_balance(db, GoodsBalance, group_by=["warehouse"])
 ```
+
+Неизвестное имя измерения в фильтрах или `group_by` вызывает `ValueError`.
 
 ### Формат результата
 
@@ -165,28 +168,49 @@ class CurrencyRates:
 ### Запись
 
 ```python
-write_movements(db, [
-    Movement(register=CurrencyRates,
-             dimensions={"currency": "USD"},
-             resources={"rate": Decimal("92.50")}),
-])
+from decui import set_record
+
+set_record(
+    db,
+    CurrencyRates,
+    dimensions={"currency": "USD"},
+    resources={"rate": Decimal("92.50")},
+)
 ```
 
 ### Чтение
 
-Информационные регистры читаются прямым запросом к таблице (без суммирования):
+Для чтения всех записей используйте `get_records`, а для последнего актуального значения на дату — `get_latest`:
 
 ```python
-from sqlalchemy.orm import sessionmaker
-Session = sessionmaker(bind=db._engine)
-mc = CurrencyRates._register_meta.orm_model
-with Session() as sess:
-    rows = sess.query(mc).all()
-    for r in rows:
-        print(r.currency, r.rate)
+from decui import get_latest, get_records
+
+# Все записи (с фильтрацией и сортировкой)
+rows = get_records(db, CurrencyRates, currency="USD", order_by="-period")
+
+# Самая свежая запись (срез последних)
+latest = get_latest(db, CurrencyRates, currency="USD")
 ```
 
 ---
+
+## Цена товара у поставщика
+
+```python
+@history_register
+class Prices:
+    product = RefDimension(Product, "Товар")
+    supplier = RefDimension(Supplier, "Поставщик")
+    price = Resource("Цена")
+
+record = get_latest(db, Prices, on_date=order.date,
+                    product=product.id, supplier=order.supplier)
+```
+
+Оба измерения участвуют в поиске. Выбирается последняя запись с датой не позже
+даты заказа. `record is None` означает отсутствие записи. Нулевая цена хранится
+и читается как обычное число. Формула и допустимость цены определяются в
+[коде заказа](../../examples/features/purchase_orders.py).
 
 ## Идентификация документа
 

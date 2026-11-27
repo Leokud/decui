@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import html
+import logging
 from typing import TYPE_CHECKING, Any, Callable
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
@@ -19,8 +20,10 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from sqlalchemy.exc import SQLAlchemyError
 
 from decui.fields import DateField
+from decui.ui.editors import show_ui_error
 
 if TYPE_CHECKING:
     from decui.entity import Entity
@@ -227,7 +230,7 @@ class ReminderDialog(QDialog):
             self._entity._save_message = getattr(current, "_save_message", None)
             return True
         except Exception as exc:
-            QMessageBox.warning(self, "Не удалось сохранить", str(exc))
+            show_ui_error(self, "Не удалось сохранить", exc, warning=True)
             return False
 
 
@@ -292,7 +295,10 @@ class ReminderService(QObject):
         for cls in self._entity_classes:
             try:
                 items = self._db.list(cls)
-            except Exception:
+            except (SQLAlchemyError, RuntimeError, PermissionError, ValueError):
+                logging.getLogger(__name__).warning(
+                    "Не удалось проверить сроки для %s", cls.__name__, exc_info=True,
+                )
                 continue
 
             for item in items:

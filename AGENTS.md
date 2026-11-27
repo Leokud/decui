@@ -1,5 +1,20 @@
 # DECUI — LLM Context
 
+## Working in this repository
+
+This file is the shared project guide for all coding agents. Keep project rules
+here. Client-specific instruction files load or point to this file.
+
+1. From the repository root, inspect `git status --short` and the diff for the
+   files you plan to edit. Preserve work already in progress.
+2. Use Python 3.12+ and uv. Run `uv sync --locked --inexact` to install the
+   versions from `uv.lock` while preserving extra local development tools.
+3. Read the relevant guide in `decui/docs/`, the public exports in
+   `decui/__init__.py`, and a matching example or test before changing a feature.
+4. When multiple agents work concurrently, agree on file ownership or use
+   separate Git worktrees. At handoff, record the intended behavior, files
+   changed, checks run and remaining work in the task or pull request.
+
 ## Project Overview
 
 Metadata-driven desktop ERP framework. User writes only metadata (class definitions
@@ -7,6 +22,32 @@ with field descriptors) and business logic — the framework auto-generates SQL 
 forms, lists, navigation, table parts, reports, and accumulation registers.
 
 **Tech stack:** Python 3.12+ · PySide6 · SQLAlchemy 2.0+ · SQLite · PyInstaller
+
+## Framework capability targets
+
+- Generate persistent CRUD, navigation, and forms for linked master data and
+  documents. Support parent-child views from a record, reference choices that
+  depend on other fields, conditional inputs, and related-record creation with
+  defaults from the current context.
+- Support resource scheduling through date and time fields, a calendar that
+  opens event cards, and validation hooks for overlapping bookings, cancellations,
+  and suggestions for free slots.
+- Support editable line items with context-dependent defaults, recalculation of
+  amounts and totals, and user-facing warnings driven by business rules.
+- Keep effective-dated values by multiple keys, such as item and supplier.
+  Retrieve the latest value as of a date for document defaults and reports.
+  Support posting and reversal for operations that affect register balances.
+- Build reports with period and reference filters, grouping, totals, charts,
+  conditional formatting, and contextual opening from a record with filters set.
+- Support dated activity logs, notes with attachments, recurring reminders,
+  and summaries over configurable periods.
+- Preserve existing records when extending a working application. Provide
+  repeatable demo data and a packaged desktop executable.
+
+Use the framework for reusable forms, persistence, and extension points. Keep
+booking rules, deadlines, scoring, budgets, and pricing formulas in application
+code. Check the current public API before assuming a capability listed here
+is implemented.
 
 ## File Map
 
@@ -23,7 +64,10 @@ decui/
 ├── reports.py          # Report base, Column (with aggregate/format/prefix/suffix), DateParam…
 ├── sequence.py         # Document sequence, roles/permissions
 ├── app.py              # ERPApplication, MainWindow (nav → list → form → report)
-├── docs/               # Markdown documentation (9 files)
+├── cli.py              # decui command-line entry point
+├── studio.py           # DECUI Studio UI
+├── studio_project.py   # Studio project model and source handling
+├── docs/               # Markdown documentation
 └── ui/
     ├── editors.py      # create_editor, get/set_editor_value for all field types
     ├── form.py         # AutoForm (catalog/doc buttons), TablePartWidget (with auto-calc)
@@ -55,14 +99,25 @@ User class (Product(Catalog)) → EntityMeta.__new__() → Metadata(fields, comm
 - **__numbering__** for auto-numbering with 1C-style patterns
 - **__defaults__** for new-record defaults (callables receive `db`)
 - **`_data` dict** stores field values (accessed via `__getattr__`/`__setattr__`)
-- **`_table_data` dict** stores table part rows (`list[dict]`)
+- **`_table_data` dict** stores table part rows in `LineItemsCollection`
 
 ### Document command execution
-1. `_widgets_to_entity()` — reads form widgets into entity._data + _table_data
-2. `cmd.execute(entity)` — runs user-defined business logic
-3. `db.save(entity)` — auto-saves entity + table parts
+1. `_widgets_to_entity()` reads form values into the entity and its table parts.
+2. `Database.post()` validates the document, runs its posting command, saves it
+   and replaces its register movements in one transaction.
+3. Use `Database.unpost()` to reverse posting.
 
 ## Coding Conventions
+
+Type public functions and use a leading underscore for private methods. Keep
+user-facing labels and error messages in Russian. At UI boundaries, present
+actionable errors and keep raw SQLAlchemy exceptions out of user messages.
+Use public imports in application code and examples.
+
+When adding a field type, update its descriptor in `decui/fields.py`, SQL
+mapping in `Database._column_for_field`, editor creation and value round-trip
+in `decui/ui/editors.py`, public exports, and the field guide in
+`decui/docs/02-entities.md`. Check persistence and form editing together.
 
 ### Imports
 ```python
@@ -136,44 +191,63 @@ Column("Сумма", "total", width=120, align="right",
 1. **`list()` doesn't load table parts** — use `db.get(cls, id)` for full load
 2. **`_on_edit` must reload** from DB: `full = db.get(type(entity), entity._id)`
 3. **`populate_ref_editor` clears selection** — now fixed with `blockSignals`
-4. **`_auto_save` must NOT re-read widgets** after command — use `_save_entity_as_is`
+4. Read widgets before running a command so its changes are preserved on save.
 5. **Movement sign:** expense resources should be stored as negatives (write_movements does this)
-6. **Schema changes:** handled automatically via hash comparison in `_auto_upgrade()`
+6. **Schema changes:** `_auto_upgrade()` applies additive changes and explicit
+   renames. Verify upgrades against a database containing existing records.
 
 ## Build & Run
 
 ```bash
 # Run from source
-cd decui && python examples/simple.py
+uv run python -m examples.simple
+
+# Run DECUI Studio
+uv run decui studio
 
 # Build EXE
-python build_exe.py   # → dist/ERP/ERP.exe
+uv run python build_exe.py
 
-# Auto-deletes old .db files on build
+# --clean-db explicitly deletes root-level *.db files before building
 ```
+
+## Documentation and GitHub Pages
+
+- When a change affects public APIs, CLI commands, Studio, or the application
+  development workflow, update the relevant examples, `README.md`, and guides
+  in `decui/docs/` as part of the same change. Keep the quickstart runnable.
+- Update the affected tutorial steps, code samples, and API reference in
+  `docs/index.html`. This file is the source of the GitHub Pages tutorial.
+- Verify changed snippets against the current API and preview changed HTML
+  locally. `.github/workflows/deploy-pages.yml` publishes `docs/` after a push to
+  `master` and also supports manual runs. When publishing, verify that the
+  workflow succeeds and that the changed tutorial sections work on the live site.
 
 ## Testing
 
 ```bash
 # Run full automated test suite (pytest)
-QT_QPA_PLATFORM=offscreen uv run pytest -v
+QT_QPA_PLATFORM=offscreen uv run --locked pytest -v
 
 # Type checking (Pyrefly)
-uv run pyrefly check decui
+uv run --locked pyrefly check decui
 
 # Import test (no display needed)
-$env:QT_QPA_PLATFORM='offscreen'; python -c "from decui import *"
+QT_QPA_PLATFORM=offscreen uv run --locked python -c "from decui import *"
 ```
 
+
+In PowerShell, set `$env:QT_QPA_PLATFORM = "offscreen"` once, then run the
+same `uv run --locked ...` commands without the shell variable prefix.
 
 ## Key Architectural Decisions
 
 | Decision | Rationale |
 |---|---|
 | Entity data in `_data` dict (not SQLAlchemy model) | Decouples business logic from ORM |
-| `_table_data` as `list[dict]` | Simple, no ORM for line items |
+| `LineItemsCollection` | List-like access to table part rows |
 | Widgets → entity → DB on save | Explicit data flow, easy to debug |
 | Build-time defaults (`__defaults__`) | Compiled into EXE, no external config |
-| Schema hash auto-migration | Drops+recreates tables on schema change |
+| Additive schema migration and explicit renames | Preserve existing data across supported upgrades |
 | Commands auto-save | Matches 1C behavior (post = save) |
 | No eval/exec | PyInstaller compatible, static analysis safe |

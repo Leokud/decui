@@ -216,13 +216,23 @@ def _collect_members(cls: type) -> tuple[dict[str, Dimension], dict[str, Resourc
 
 # ── ORM: создание таблиц ──────────────────────────────────────────
 
-def create_register_models(engine: Any, base: Any) -> None:
+def create_register_models(
+    engine: Any,
+    base: Any,
+    *,
+    models: dict[type, type] | None = None,
+) -> dict[type, type]:
     """Создать SQL-модели для всех зарегистрированных регистров."""
     from sqlalchemy import Boolean, Column, Date, Integer, Numeric, String
 
+    result = models if models is not None else {}
     for cls in get_all_registers():
         meta = cls._register_meta
-        if meta.orm_model is not None:
+        if models is not None:
+            if cls in result:
+                continue
+        elif meta.orm_model is not None:
+            result[cls] = meta.orm_model
             continue
         table_name = _reg_table_name(meta.name)
         attrs: dict[str, Any] = {
@@ -250,8 +260,32 @@ def create_register_models(engine: Any, base: Any) -> None:
             else:
                 attrs[name] = Column(String(255), nullable=not res.required)
         model = type(f"{meta.name}Model", (base,), attrs)
+        result[cls] = model
         meta.orm_model = model
         meta.table_name = table_name
+    return result
+
+
+def _resolve_register_model(db: Database, register_cls: type[Any]) -> type[Any] | None:
+    getter = getattr(db, "_get_register_model", None)
+    if callable(getter):
+        model = getter(register_cls)
+        if model is not None:
+            return model
+    return register_cls._register_meta.orm_model
+
+
+def _validate_dim_filters(
+    meta: RegisterMeta,
+    model_class: type[Any],
+    dim_filters: dict[str, Any],
+) -> None:
+    allowed = set(meta.dimensions) | {"doc_type", "doc_id", "period"}
+    for key in dim_filters:
+        if key not in allowed or not hasattr(model_class, key):
+            raise ValueError(
+                f"Неизвестное измерение или фильтр «{key}» в регистре {meta.name}."
+            )
 
 
 def _reg_table_name(name: str) -> str:
@@ -282,7 +316,7 @@ def write_movements(db: Database, movements: list[Movement]) -> None:
         for mv in movements:
             db._require_register_document(session, mv.doc_type, mv.doc_id)
             meta = mv.register._register_meta
-            model_class = meta.orm_model
+            model_class = _resolve_register_model(db, mv.register)
             if model_class is None:
                 continue
             row = model_class()
@@ -327,11 +361,11 @@ def clear_movements(
     doc_type: str | None = None,
 ) -> None:
     """Очистить движения регистра по документу."""
+    db._check_ready()
     if doc_id is None and not doc_type:
         return  # Guard against wiping an entire register accidentally
 
-    meta = register_cls._register_meta
-    model_class = meta.orm_model
+    model_class = _resolve_register_model(db, register_cls)
     if model_class is None:
         return
     with db.session() as session:
@@ -353,10 +387,18 @@ def get_balance(
     """Получить остатки/обороты по регистру накопления."""
     from sqlalchemy import func as sa_func
 
+    db._check_ready()
     meta = register_cls._register_meta
-    model_class = meta.orm_model
+    model_class = _resolve_register_model(db, register_cls)
     if model_class is None:
         return []
+    _validate_dim_filters(meta, model_class, dim_filters)
+    if group_by:
+        for g in group_by:
+            if g not in meta.dimensions or not hasattr(model_class, g):
+                raise ValueError(
+                    f"Неизвестное измерение группировки «{g}» в регистре {meta.name}."
+                )
     with db.session() as session:
         q = db._register_query(session, model_class)
         if on_date:
@@ -408,19 +450,19 @@ def get_records(
     **dim_filters: Any,
 ) -> list[dict[str, Any]]:
     """Получить сырые записи регистра с фильтрацией (для регистров сведений и логов)."""
-
+    db._check_ready()
     meta = register_cls._register_meta
-    model_class = meta.orm_model
+    model_class = _resolve_register_model(db, register_cls)
     if model_class is None:
         return []
+    _validate_dim_filters(meta, model_class, dim_filters)
     with db.session() as session:
         q = db._register_query(session, model_class)
         if on_date and hasattr(model_class, "period"):
             eff_date = on_date.date() if isinstance(on_date, datetime.datetime) else on_date
             q = q.filter(model_class.period <= eff_date)
         for k, v in dim_filters.items():
-            if hasattr(model_class, k):
-                q = q.filter(getattr(model_class, k) == _norm_dim_val(v))
+            q = q.filter(getattr(model_class, k) == _norm_dim_val(v))
         if order_by and hasattr(model_class, order_by):
             col = getattr(model_class, order_by)
             q = q.order_by(col.desc() if desc else col.asc())
@@ -464,6 +506,7 @@ def get_latest(
     **dim_filters: Any,
 ) -> dict[str, Any] | None:
     """Получить самую свежую запись регистра сведений (срез последних по дате и ID)."""
+    db._check_ready()
     records = get_records(
         db,
         register_cls,

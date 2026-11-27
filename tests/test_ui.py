@@ -449,6 +449,196 @@ def test_list_range_filter_includes_and_restores_both_bounds(qapp):
     assert bounds == [5, 7]
 
 
+def test_list_empty_state_and_reset_keep_related_scope(qapp):
+    db = Database.memory()
+    first = db.save(ItemUI(name="Первый товар"))
+    second = db.save(ItemUI(name="Второй товар"))
+    order = db.save(OrderUI(number="А-1", basis=first.id))
+    db.save(OrderUI(number="Б-1", basis=second.id))
+
+    view = ListView(OrderUI, db, filters={"basis": first.id})
+    view._search_edit.setText("Несуществующий заказ")
+    assert view._table.isHidden()
+    assert not view._empty_label.isHidden()
+    assert "ничего не найдено" in view._empty_label.text()
+    assert not view._reset_button.isHidden()
+
+    view._reset_button.click()
+    assert view._search_edit.text() == ""
+    assert view._reset_button.isHidden()
+    assert view._empty_label.isHidden()
+    assert [item.id for item in view._items] == [order.id]
+
+    db.delete(order)
+    view.refresh()
+    assert view._table.isHidden()
+    assert "пока нет записей" in view._empty_label.text()
+    assert view._reset_button.isHidden()
+
+    listing = ListView(OrderUI, db)
+    listing._field_filters = {"number": ("eq", "А-1")}
+    listing.refresh()
+    assert listing._proxy.rowCount() == 0
+    assert "ничего не найдено" in listing._empty_label.text()
+    assert not listing._reset_button.isHidden()
+
+    listing._search_edit.setText("А")
+    listing._reset_button.click()
+    assert listing._search_edit.text() == ""
+    assert listing._field_filters == {}
+    assert listing._proxy.rowCount() == 1
+    assert listing._filters_button.text() == "Отбор…"
+
+
+def test_list_search_keyboard_and_refresh_keep_editing_target(qapp, monkeypatch):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QMessageBox
+
+    confirmations = []
+
+    def decline_delete(*args):
+        confirmations.append(args)
+        return QMessageBox.StandardButton.No
+
+    monkeypatch.setattr(QMessageBox, "question", decline_delete)
+
+    db = Database.memory()
+    other = db.save(ItemUI(name="Альбом"))
+    selected = db.save(ItemUI(name="Бумага"))
+    view = ListView(ItemUI, db)
+    view.show()
+    view.activateWindow()
+    view._table.setFocus()
+    qapp.processEvents()
+    try:
+        QTest.keyClick(view._table, Qt.Key.Key_F, Qt.KeyboardModifier.ControlModifier)
+        assert view._search_edit.hasFocus()
+        view._search_edit.setText("Бумага")
+        QTest.keyClick(view._search_edit, Qt.Key.Key_Escape)
+        assert view._search_edit.text() == ""
+
+        view._search_edit.setText("Бумага")
+        edited = []
+        view.edit_requested.connect(lambda item: edited.append(item.id))
+        QTest.keyClick(view._search_edit, Qt.Key.Key_Return)
+        assert view._table.hasFocus()
+        assert view._selected_entity().id == selected.id
+        assert edited == []
+
+        view._search_edit.setFocus()
+        view._search_edit.setCursorPosition(0)
+        QTest.keyClick(view._search_edit, Qt.Key.Key_Delete)
+        assert view._search_edit.text() == "умага"
+        assert confirmations == []
+        assert db.get(ItemUI, selected.id) is not None
+        assert db.get(ItemUI, other.id) is not None
+
+        view._reset_button.click()
+        view._table.setFocus()
+        view._table.sortByColumn(0, Qt.SortOrder.AscendingOrder)
+        db.save(ItemUI(name="Абажур"))
+        QTest.keyClick(view._table, Qt.Key.Key_F5)
+        assert view._selected_entity().id == selected.id
+        QTest.keyClick(view._table, Qt.Key.Key_Return)
+        assert edited == [selected.id]
+    finally:
+        view.close()
+
+
+@pytest.mark.parametrize("save_on_exit", [True, False])
+def test_main_window_keeps_unsaved_card_open_until_user_can_leave(qapp, monkeypatch, save_on_exit):
+    from PySide6.QtWidgets import QMessageBox
+
+    from decui.app import _MainWindow
+
+    buttons = QMessageBox.StandardButton
+    last_answer = buttons.Save if save_on_exit else buttons.Discard
+    answers = iter((buttons.Cancel, buttons.Save, last_answer))
+    warnings = []
+
+    def choose(prompt):
+        assert prompt.button(buttons.Save).text() == "Сохранить"
+        assert prompt.button(buttons.Discard).text() == "Не сохранять"
+        assert prompt.escapeButton() is prompt.button(buttons.Cancel)
+        return next(answers)
+
+    monkeypatch.setattr(QMessageBox, "exec", choose)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *_args: warnings.append(_args[-1]))
+    db = Database.memory()
+    item = db.save(ItemUI(name="Бумага"))
+    window = _MainWindow(db)
+    window._on_edit(item)
+    window.show()
+    form = window._active_widget
+    field = form._widgets["name"]
+    try:
+        field.setText("Папка")
+        window._on_navigate(OrderUI)
+        assert window._active_widget is form
+        assert field.text() == "Папка"
+
+        field.clear()
+        assert not window.close()
+        assert window.isVisible()
+        assert warnings and "Имя" in warnings[-1]
+        assert db.get(ItemUI, item.id).name == "Бумага"
+
+        field.setText("Папка")
+        assert window.close()
+        assert db.get(ItemUI, item.id).name == ("Папка" if save_on_exit else "Бумага")
+    finally:
+        window.hide()
+
+
+def test_modal_form_scopes_save_shortcut_and_protects_draft_on_escape(qapp, monkeypatch):
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QKeySequence
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QMessageBox
+
+    from decui.ui.form import _RecordDialog
+
+    buttons = QMessageBox.StandardButton
+    answers = iter((buttons.Cancel, buttons.Cancel, buttons.Save))
+    monkeypatch.setattr(QMessageBox, "exec", lambda prompt: next(answers))
+    db = Database.memory()
+    parent = AutoForm(OrderUI, db)
+    parent.load_new()
+    parent._widgets["number"].setText("Заказ в работе")
+    parent.show()
+    dialog = _RecordDialog(ItemUI, db, parent)
+    dialog.form.load_new()
+    dialog.setModal(True)
+    dialog.show()
+    editor = dialog.form._widgets["name"]
+    editor.setFocus()
+    qapp.processEvents()
+    try:
+        editor.setText("Бумага")
+        QTest.keySequence(editor, QKeySequence(QKeySequence.StandardKey.Save))
+        assert dialog.isVisible()
+        assert not dialog.form.has_unsaved_changes()
+        assert parent.has_unsaved_changes()
+        assert len(db.list(ItemUI)) == 1
+        assert db.list(OrderUI) == []
+
+        editor.setText("Папка")
+        QTest.keyClick(editor, Qt.Key.Key_Escape)
+        assert dialog.isVisible()
+        assert editor.text() == "Папка"
+        assert db.list(ItemUI)[0].name == "Бумага"
+
+        assert not dialog.close()
+        assert dialog.isVisible()
+        assert dialog.close()
+        assert not dialog.isVisible()
+        assert [item.name for item in db.list(ItemUI)] == ["Папка"]
+    finally:
+        dialog.hide()
+        parent.hide()
+
+
 def test_main_window_restores_list_after_editing_record(qapp):
     from PySide6.QtCore import Qt
 
@@ -670,3 +860,506 @@ def test_table_pastes_spreadsheet_rows_and_leaves_table_unchanged_on_error(qapp,
         part._paste_rows("Бумага\t5\nБумага\tне число")
     assert part.get_rows() == rows
     assert db.list(PasteOrder) == []
+
+
+def _ref_options(combo):
+    return [combo.itemData(i) for i in range(combo.count())]
+
+
+def test_related_refresh_updates_clean_lines_and_keeps_draft_ref(qapp):
+    db = Database.memory()
+    first = db.save(ItemUI(name="Бумага"))
+    second = db.save(ItemUI(name="Папка"))
+    order = db.save(OrderUI(Rows=[{"product": first.id, "qty": 1}]))
+    form = AutoForm(OrderUI, db)
+    form.load_by_id(order.id)
+    part = form._tab_widgets["Rows"]
+
+    order.Rows[0]["qty"] = 5
+    db.save(order)
+    form.refresh_related_data()
+    assert part.get_rows()[0]["qty"] == 5
+    assert not form.has_unsaved_changes()
+
+    combo = part._table.cellWidget(0, 0)
+    combo.setCurrentIndex(combo.findData(second.id))
+    form.refresh_related_data()
+    assert form.has_unsaved_changes()
+    assert form._save()
+    stored = db.get(OrderUI, order.id)
+    assert (stored.Rows[0]["product"], stored.Rows[0]["qty"]) == (second.id, 5)
+
+
+def test_dependent_ref_keeps_drafts_and_filters_quick_create(qapp, monkeypatch):
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QPushButton
+
+    from decui import Boolean
+    from decui import registry
+
+    monkeypatch.setattr(registry, "_entity_registry", {})
+
+    @catalog
+    class Buyer(Catalog):
+        name = String()
+
+    @catalog
+    class Address(Catalog):
+        name = String()
+        street = String()
+        owner = Ref(Buyer, required=True)
+        disabled = Boolean(default=False)
+        zone = Integer(default=0)
+
+    @catalog
+    class Entrance(Catalog):
+        name = String()
+        address = Ref(Address)
+
+    @document
+    class Delivery(Document):
+        entrance = Ref(Entrance, choice_filter={"address": "address"})
+        address = Ref(Address, auto_fill="street", choice_filter={"owner": "buyer", "disabled": "disabled", "zone": "zone"})
+        street = String()
+        buyer = Ref(Buyer)
+        disabled = Boolean(default=False)
+        zone = Integer(default=0)
+        notes = String()
+
+    db = Database.memory()
+    first = db.save(Buyer(name="Первый"))
+    second = db.save(Buyer(name="Второй"))
+    north = db.save(Address(name="Север", street="Лесная", owner=first.id))
+    south = db.save(Address(name="Юг", owner=second.id))
+    db.save(Address(name="Закрыт", owner=first.id, disabled=True))
+    db.save(Address(name="Другой район", owner=first.id, zone=1))
+    entry = db.save(Entrance(name="Вход", address=north.id))
+    saved = db.save(Delivery(buyer=first.id, address=north.id, entrance=entry.id))
+    form = AutoForm(Delivery, db)
+    combo = form._widgets["address"]
+    choice = form._widgets["buyer"]
+    entrance = form._widgets["entrance"]
+    plus = form._field_controls["address"].findChild(QPushButton)
+
+    form.load_new()
+    assert _ref_options(combo) == [None]
+    assert not plus.isEnabled()
+    choice.setCurrentIndex(choice.findData(first.id))
+    assert _ref_options(combo) == [None, north.id]
+    combo.setCurrentIndex(combo.findData(north.id))
+    assert _ref_options(entrance) == [None, entry.id]
+    assert form._form_value("street") == "Лесная"
+    choice.setEditText("Нет такого покупателя")
+    assert _ref_options(combo) == [None] and _ref_options(entrance) == [None]
+    assert form._form_value("street") is None
+    assert form._form_value("buyer") is None
+    choice.setEditText("Второй")
+    assert _ref_options(combo) == [None, south.id]
+    assert form._form_value("buyer") == second.id
+
+    form.load_new({"buyer": first.id, "address": north.id, "entrance": entry.id})
+    assert combo.currentData() == north.id
+    assert entrance.currentData() == entry.id
+
+    form.load_by_id(saved.id)
+    assert combo.currentData() == north.id
+    assert not form.has_unsaved_changes()
+    form.refresh_related_data()
+    assert combo.currentData() == north.id
+    choice.setCurrentIndex(choice.findData(second.id))
+    assert _ref_options(combo) == [None, south.id]
+    assert combo.currentData() is None and _ref_options(entrance) == [None]
+    assert db.get(Delivery, saved.id).address == north.id
+    choice.setCurrentIndex(choice.findData(first.id))
+    assert _ref_options(combo) == [None, north.id]
+    assert combo.currentData() is None
+    assert db.get(Delivery, saved.id).address == north.id
+    choice.setCurrentIndex(0)
+    assert _ref_options(combo) == [None]
+    choice.setCurrentIndex(choice.findData(first.id))
+    assert plus.isEnabled()
+
+    def create_address():
+        dialog = QApplication.activeModalWidget()
+        try:
+            child = dialog.findChild(AutoForm)
+            assert child.entity.owner == first.id and child.entity.zone == 0
+            child._widgets["name"].setText("Новый адрес")
+            child._catalog_save_and_close()
+        finally:
+            if dialog.isVisible():
+                dialog.reject()
+
+    QTimer.singleShot(0, create_address)
+    plus.click()
+    created = db.filter(Address, name="Новый адрес")[0]
+    assert combo.currentData() == created.id
+    assert _ref_options(combo) == [None, north.id, created.id]
+    assert db.get(Delivery, saved.id).address == north.id
+
+    def create_other_address():
+        dialog = QApplication.activeModalWidget()
+        child = dialog.findChild(AutoForm)
+        buyer = child._widgets["owner"]
+        buyer.setCurrentIndex(buyer.findData(second.id))
+        child._widgets["name"].setText("Адрес другого покупателя")
+        child._catalog_save_and_close()
+        if dialog.isVisible():
+            dialog.reject()
+
+    QTimer.singleShot(0, create_other_address)
+    plus.click()
+    assert len(db.filter(Address, owner=second.id)) == 2
+    assert combo.currentData() == created.id
+    assert _ref_options(combo) == [None, north.id, created.id]
+    assert form._save()
+    assert db.get(Delivery, saved.id).address == created.id
+
+    draft = db.save(Delivery(buyer=first.id))
+    form.load_by_id(draft.id)
+    choice.setCurrentIndex(choice.findData(second.id))
+    draft.address = north.id
+    db.save(draft)
+    form.refresh_related_data()
+    assert _ref_options(combo) == [None, *(row.id for row in db.filter(Address, owner=second.id))]
+    assert form._save()
+    stored = db.get(Delivery, draft.id)
+    assert stored.buyer == second.id and stored.address is None
+
+
+def test_dependent_ref_preserves_legacy_without_disclosing_names(qapp, monkeypatch):
+    from decui import Boolean, registry
+    from decui.accounts import Account, current_account, set_current_account
+
+    monkeypatch.setattr(registry, "_entity_registry", {})
+
+    @catalog
+    class PrivateBuyer(Catalog):
+        __permissions__ = {"read": ["clerk"]}
+        name = String()
+
+    @catalog
+    class PrivateAddress(Catalog):
+        __owner_field__ = "login"
+        __field_read_roles__ = {"code": []}
+        login = String(visible=False)
+        name = String()
+        owner = Ref(PrivateBuyer)
+        code = Integer(default=0)
+
+    @document
+    class PrivateDelivery(Document):
+        __field_read_roles__ = {"private_buyer": []}
+        __form_visible_when__ = {"buyer": ("show_buyer", True)}
+        buyer = Ref(PrivateBuyer)
+        show_buyer = Boolean(default=True)
+        private_buyer = Ref(PrivateBuyer)
+        address = Ref(PrivateAddress, choice_filter={"owner": "buyer"})
+        other_address = Ref(PrivateAddress, choice_filter={"owner": "private_buyer"})
+        coded_address = Ref(PrivateAddress, choice_filter={"owner": "buyer", "code": "code"})
+        code = Integer(default=0)
+        notes = String()
+
+        @tab_part
+        class Rows:
+            buyer = Ref(PrivateBuyer)
+
+    db = Database.memory()
+    previous = current_account()
+    try:
+        set_current_account(Account("boss", "admin"))
+        buyer = db.save(PrivateBuyer(name="Покупатель"))
+        wrong = db.save(PrivateBuyer(name="Другой"))
+        private = db.save(PrivateAddress(name="Секретный адрес", owner=wrong.id))
+        legacy = db.save(PrivateDelivery(buyer=wrong.id, address=private.id))
+        private.owner = buyer.id
+        db.save(private)
+        saved = db.save(PrivateDelivery(buyer=buyer.id, private_buyer=buyer.id, address=private.id,
+                              other_address=private.id, coded_address=private.id, Rows=[{"buyer": buyer.id}]))
+        form = AutoForm(PrivateDelivery, db)
+        form.load_by_id(legacy.id)
+        combo = form._widgets["address"]
+        assert _ref_options(combo) == [None]
+        assert "Сохранённая ссылка" in combo.lineEdit().placeholderText()
+        assert not form.has_unsaved_changes()
+        assert form._save()
+        assert db.get(PrivateDelivery, legacy.id).address == private.id
+        form._widgets["buyer"].setCurrentIndex(form._widgets["buyer"].findData(buyer.id))
+        assert combo.currentData() == private.id
+
+        set_current_account(Account("employee", "clerk"))
+        public = db.save(PrivateAddress(name="Доступный адрес", owner=buyer.id))
+        form.load_by_id(saved.id)
+        assert _ref_options(combo) == [None, public.id]
+        assert _ref_options(form._widgets["other_address"]) == [None]
+        assert _ref_options(form._widgets["coded_address"]) == [None]
+        assert "Секретный адрес" not in combo.currentText()
+        assert not form.has_unsaved_changes()
+        form._widgets["notes"].setText("Комментарий")
+        assert form._save()
+        assert db.get(PrivateDelivery, saved.id).address == private.id
+        form._widgets["show_buyer"].setChecked(False)
+        assert _ref_options(combo) == [None]
+        form._widgets["show_buyer"].setChecked(True)
+        assert _ref_options(combo) == [None, public.id]
+        combo.setCurrentIndex(combo.findData(public.id))
+        assert not combo.toolTip()
+        assert form._save()
+        assert db.get(PrivateDelivery, saved.id).address == public.id
+
+        set_current_account(Account("guest", "guest"))
+        form.load_by_id(saved.id)
+        assert _ref_options(combo) == [None]
+        assert "Доступный адрес" not in combo.currentText()
+        form.refresh_related_data()
+        form._widgets["notes"].setText("Новая заметка")
+        assert form._save()
+        stored = db.get(PrivateDelivery, saved.id)
+        assert stored.buyer == stored.Rows[0]["buyer"] == buyer.id
+        form._widgets["buyer"].setCurrentIndex(0)
+        form._tab_widgets["Rows"]._table.cellWidget(0, 0).setCurrentIndex(0)
+        assert form._save()
+        stored = db.get(PrivateDelivery, saved.id)
+        assert stored.buyer is None and stored.Rows[0]["buyer"] is None
+    finally:
+        set_current_account(previous)
+
+
+@pytest.mark.parametrize("case, path, message", [
+    ("source", "InvalidChoice.address", "неизвестное поле источника"),
+    ("target", "InvalidChoice.address", "неизвестное поле отбора"),
+    ("type", "InvalidChoice.address", "несовместимые поля"),
+    ("cycle", "InvalidChoice.address", "цикл зависимостей"),
+    ("table", "InvalidChoice.Rows.address", "только в шапке"),
+])
+def test_dependent_ref_invalid_metadata(monkeypatch, case, path, message):
+    from decui import registry
+
+    monkeypatch.setattr(registry, "_entity_registry", {})
+
+    @catalog
+    class First(Catalog):
+        name = String()
+
+    @catalog
+    class Second(Catalog):
+        first = Ref(First)
+        link = Ref("Second")
+
+    @document
+    class InvalidChoice(Document):
+        customer = Ref(Second)
+        address = Ref(Second, choice_filter={
+            "source": {"first": "missing"},
+            "target": {"missing": "customer"},
+            "type": {"first": "customer"},
+            "cycle": {"link": "other"},
+            "table": {},
+        }[case])
+        other = Ref(Second, choice_filter={"link": "address"} if case == "cycle" else {})
+
+        @tab_part
+        class Rows:
+            address = Ref(Second, choice_filter={"link": "customer"} if case == "table" else {})
+
+    db = Database.memory()
+    assert not db._ready
+    assert f"{path}:" in db._last_error and message in db._last_error
+
+
+def test_ui_error_formatting_hides_raw_sql_and_preserves_details(qapp, monkeypatch):
+    import sqlite3
+
+    from PySide6.QtWidgets import QMessageBox
+    from sqlalchemy.exc import IntegrityError
+
+    from decui.ui.editors import format_ui_error, show_ui_error
+
+    raw_unique = "Ошибка SQL при сохранении: (sqlite3.IntegrityError) UNIQUE constraint failed: item.code\n[SQL: INSERT INTO item]"
+    msg_unique = format_ui_error(RuntimeError(raw_unique))
+    assert "уникальными значениями" in msg_unique
+    assert "SQL" not in msg_unique and "INSERT" not in msg_unique
+
+    sa_fk = IntegrityError("DELETE FROM item", {}, sqlite3.IntegrityError("FOREIGN KEY constraint failed"))
+    msg_fk = format_ui_error(sa_fk)
+    assert "используется в других документах" in msg_fk
+    assert "DELETE FROM" not in msg_fk
+
+    msg_locked = format_ui_error(sqlite3.OperationalError("database is locked"))
+    assert "временно занята" in msg_locked
+
+    assert format_ui_error(ValueError("Понятная бизнес-ошибка")) == "Понятная бизнес-ошибка"
+
+    shown = []
+
+    def capture_box(box):
+        shown.append((box.text(), box.detailedText()))
+        return int(QMessageBox.StandardButton.Ok)
+
+    monkeypatch.setattr(QMessageBox, "exec", capture_box)
+    show_ui_error(None, "Ошибка", RuntimeError(raw_unique), prefix="Ошибка сохранения: ")
+    assert len(shown) == 1
+    assert shown[0][0].startswith("Ошибка сохранения: ")
+    assert "уникальными значениями" in shown[0][0]
+    assert "SQL" not in shown[0][0]
+    assert "INSERT INTO item" in shown[0][1]
+
+    db = Database.memory()
+    item = db.save(ItemUI(name="Товар"))
+    view = ListView(ItemUI, db)
+    view._table.selectRow(0)
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "question", lambda *_a, **_kw: QMessageBox.StandardButton.Yes)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *_a: warnings.append(_a[-1]))
+    monkeypatch.setattr(db, "delete", lambda _ent: (_ for _ in ()).throw(RuntimeError(raw_unique)))
+    view._on_action("Delete")
+    assert len(warnings) == 1
+    assert "уникальными значениями" in warnings[0]
+    assert "INSERT" not in warnings[0]
+    assert db.get(ItemUI, item.id) is not None
+
+
+def test_report_view_csv_totals_variants_error_guard_and_shortcut(qapp, tmp_path, monkeypatch):
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QShortcut
+    from PySide6.QtWidgets import QComboBox, QFileDialog, QInputDialog, QMessageBox
+
+    from decui import RefParam
+
+    class FormattedReport(Report):
+        title = "Продажи"
+        item = RefParam("Товар", ItemUI)
+        columns = [
+            Column("Товар", "name"),
+            Column("Сумма", "total", aggregate="sum", format="{:,.2f}", suffix=" руб."),
+            Column("Битый", "broken", format="{bad_key}"),
+        ]
+
+        def execute(self, db, item=None):
+            return [{"name": "Бумага", "total": Decimal("10"), "broken": "5"}, {"name": "Папка", "total": Decimal("20"), "broken": "7"}]
+
+    db = Database.memory()
+    db.save(ItemUI(name="Бумага"))
+    view = ReportView(FormattedReport, db)
+    shortcuts = [sc for sc in view.findChildren(QShortcut) if sc.key().toString() == "F5"]
+    assert len(shortcuts) == 1
+    assert shortcuts[0].context() == Qt.ShortcutContext.WidgetWithChildrenShortcut
+    ref_combo = view._param_widgets["item"]
+    assert isinstance(ref_combo, QComboBox)
+    assert [ref_combo.itemData(i) for i in range(ref_combo.count())].count(None) == 1
+
+    view._generate()
+    assert "30.00 руб." in view._summary_label.text()
+
+    target_no_total = tmp_path / "no_total.csv"
+    monkeypatch.setattr(QMessageBox, "information", lambda *_a: None)
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *_a: (str(target_no_total), ""))
+    view._aggregates = {"total": None}
+    view._export_csv()
+    assert not any("Итого" in line for line in target_no_total.read_text(encoding="utf-8-sig").splitlines())
+
+    target_with_total = tmp_path / "with_total.csv"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *_a: (str(target_with_total), ""))
+    view._selected_columns = {"name", "total"}
+    view._column_order = ["total", "name"]
+    view._aggregates = {"total": "sum"}
+    view._export_csv()
+    assert target_with_total.read_text(encoding="utf-8-sig").splitlines() == [
+        "Сумма;Товар",
+        "10;Бумага",
+        "20;Папка",
+        "30;",
+    ]
+
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *_a: warnings.append(_a[-1]))
+    monkeypatch.setattr(QInputDialog, "getText", lambda *_a, **_kw: ("Тест", True))
+    monkeypatch.setattr(QMessageBox, "question", lambda *_a, **_kw: QMessageBox.StandardButton.Yes)
+    monkeypatch.setattr(
+        db, "report_variants",
+        lambda *_a: (_ for _ in ()).throw(RuntimeError("Ошибка SQL при чтении: [SQL: SELECT 1]")),
+    )
+    view._reload_variants()
+    monkeypatch.setattr(
+        db, "save_report_variant",
+        lambda *_a: (_ for _ in ()).throw(RuntimeError("Ошибка SQL при записи: [SQL: INSERT 1]")),
+    )
+    view._save_variant()
+    view._variants = {"Тест": {}}
+    view._variant_picker.addItem("Тест", "Тест")
+    view._variant_picker.setCurrentIndex(view._variant_picker.findData("Тест"))
+    monkeypatch.setattr(
+        db, "delete_report_variant",
+        lambda *_a: (_ for _ in ()).throw(RuntimeError("Ошибка SQL при удалении: [SQL: DELETE 1]")),
+    )
+    view._delete_variant()
+    assert len(warnings) == 3
+    assert all("[SQL:" not in msg and "Ошибка при обращении к базе данных" in msg for msg in warnings)
+
+
+def test_table_part_caches_ref_queries_focuses_added_row_and_respects_role_rights(qapp, monkeypatch):
+    db = Database.memory()
+    item = db.save(ItemUI(name="Бумага", price=Decimal("10")))
+    order = db.save(OrderUI(
+        number="О-1",
+        Rows=[
+            {"product": item.id, "qty": 1, "price": Decimal("10")},
+            {"product": item.id, "qty": 2, "price": Decimal("10")},
+            {"product": item.id, "qty": 3, "price": Decimal("10")},
+            {"product": item.id, "qty": 4, "price": Decimal("10")},
+        ],
+    ))
+
+    list_calls = []
+    orig_list = db.list
+
+    def counting_list(cls, *args, **kwargs):
+        list_calls.append(cls)
+        return orig_list(cls, *args, **kwargs)
+
+    form = AutoForm(OrderUI, db)
+    part = form._tab_widgets["Rows"]
+    monkeypatch.setattr(db, "list", counting_list)
+    part.load_rows(order._table_data["Rows"])
+    assert list_calls.count(ItemUI) == 1
+
+    form.show()
+    form.activateWindow()
+    qapp.processEvents()
+    try:
+        part._add_button.click()
+        qapp.processEvents()
+        assert part._table.rowCount() == 5
+        assert part._table.currentRow() == 4
+        assert part._table.cellWidget(4, 0).hasFocus()
+    finally:
+        form.hide()
+
+    monkeypatch.setattr(db, "can_edit_field", lambda cls, field: not field.startswith("Rows."))
+    part.load_rows(order._table_data["Rows"])
+    assert not part._add_button.isEnabled()
+    part._add_row()
+    assert part._table.rowCount() == 4
+
+
+def test_date_time_editors_use_field_default_on_none(qapp):
+    import datetime
+
+    from decui import Date, DateTime, Time
+    from decui.ui.editors import create_editor, get_editor_value, set_editor_value
+
+    df = Date("Дата", default=datetime.date(2026, 5, 1))
+    dw = create_editor(df)
+    set_editor_value(dw, df, None)
+    assert get_editor_value(dw, df) == datetime.date(2026, 5, 1)
+
+    dtf = DateTime("Момент", default=lambda: datetime.datetime(2026, 5, 1, 14, 30))
+    dtw = create_editor(dtf)
+    set_editor_value(dtw, dtf, None)
+    assert get_editor_value(dtw, dtf) == datetime.datetime(2026, 5, 1, 14, 30)
+
+    tf = Time("Время", default=datetime.time(11, 15))
+    tw = create_editor(tf)
+    set_editor_value(tw, tf, datetime.time(8, 0))
+    set_editor_value(tw, tf, None)
+    assert get_editor_value(tw, tf) == datetime.time(11, 15)

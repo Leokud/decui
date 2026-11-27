@@ -26,20 +26,25 @@ class SalesReport(Report):
                           default=lambda: date(2030, 12, 31))
     product   = RefParam("Товар", Product, representation_field="name")
 
-    def execute(self, db, date_from, date_to, product, **kw):
+    def execute(self, db, date_from, date_to, product=None, **kw):
+        invoices = db.filter(
+            Invoice,
+            posted=True,
+            date__date_range=(date_from, date_to),
+            include_table_parts=True,
+        )
+        products = {p.id: p.name for p in db.list(Product)}
         rows = []
-        for inv in db.list(Invoice):
-            full = db.get(Invoice, inv._id)
-            if not full or not full.posted:
-                continue
-            for item in full._table_data.get("Items", []):
+        for inv in invoices:
+            for item in inv.Items:
                 if product and item.get("product") != product:
                     continue
-                prod = db.get(Product, item["product"])
                 rows.append({
-                    "product": prod.name if prod else "-",
-                    "qty":     str(item.get("quantity", "")),
-                    "total":   str(item.get("amount", "")),
+                    "product": products.get(item.get("product"), "-"),
+                    "qty": item.get("quantity", 0),
+                    "total": item.get("amount", 0),
+                    "_entity_class": Invoice,
+                    "_entity_id": inv.id,
                 })
         return rows
 ```
@@ -53,8 +58,12 @@ class SalesReport(Report):
 | Дескриптор | Виджет | Параметры |
 |---|---|---|
 | `DateParam("Метка", required=True)` | QDateEdit | `default=lambda: date(2020,1,1)` |
-| `RefParam("Метка", Entity, ...)` | QComboBox | `representation_field="name"` |
-| `StringParam("Метка")` | QLineEdit | — |
+| `RefParam("Метка", Entity, ...)` | QComboBox | `representation_field="name"`, `from_record=True` |
+| `StringParam("Метка")` | QLineEdit | `required`, `default` |
+| `IntegerParam("Метка")` | QSpinBox | `min_value`, `max_value`, `default` |
+| `DecimalParam("Метка")` | QDoubleSpinBox | `precision`, `scale`, `default` |
+| `BooleanParam("Метка")` | QCheckBox | `default` |
+| `ChoiceParam("Метка", choices=[...])` | QComboBox | `choices`, `default` |
 
 ### DateParam
 
@@ -74,6 +83,9 @@ product = RefParam("Товар", Product, representation_field="name")
 
 Если параметр не обязательный (`required=False`), его можно оставить пустым
 для выборки по всем значениям.
+
+С `from_record=True` отчёт появляется в меню «Отчёты» сохранённой карточки
+товара и открывается с заполненным фильтром. [Пример с поставщиком](05-reports.md#отчёт-из-карточки)
 
 ---
 
@@ -127,29 +139,39 @@ Column("Доля", "share", format="{:.1%}", prefix="~")
 
 ---
 
-## Метод execute()
+## Метод execute() и группировка
 
 ```python
-def execute(self, db, date_from, date_to, product, **kw):
+def execute(self, db, date_from, date_to, product=None, **kw):
+    invoices = db.filter(
+        Invoice,
+        posted=True,
+        date__date_range=(date_from, date_to),
+        include_table_parts=True,
+    )
+    products = {p.id: p.name for p in db.list(Product)}
     rows = []
-    for inv in db.list(Invoice):
-        full = db.get(Invoice, inv._id)
-        if not full or not full.posted:
-            continue
-        rows.append({
-            "product": db.get(Product, item["product"]).name,
-            "total":   str(item["amount"]),
-        })
+    for inv in invoices:
+        for item in inv.Items:
+            if product and item.get("product") != product:
+                continue
+            rows.append({
+                "product": products.get(item.get("product"), "-"),
+                "qty": item.get("quantity", 0),
+                "total": item.get("amount", 0),
+            })
     return rows
 ```
 
 ### Правила
 
 - Принимает `db` и именованные параметры (совпадают с именами полей параметров)
-- Возвращает `list[dict]`
+- Возвращает `list[dict]` (для отчётов по регистрам можно использовать `register_report_rows(...)`)
 - Ключи dict должны совпадать с `field` в `Column`
-- Фильтровать только проведённые документы: `if not full.posted: continue`
+- Фильтровать только проведённые документы: `posted=True` в `db.filter(...)`
 - Неиспользуемые параметры принимаются через `**kw`
+- Для вложенных подытогов в классе отчёта задайте `group_by = ("category",)` или настройте группировку прямо в окне отчёта (варианты и порядок колонок сохраняются в БД для каждой учётной записи, доступен экспорт в CSV).
+- Управляющие ключи в словаре строки: `_entity_class` + `_entity_id` (открытие карточки по двойному клику), `_style` (`"completed"`, `"current"`), `_color`, `_bold`.
 
 ---
 

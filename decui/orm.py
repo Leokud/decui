@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import datetime
+import logging
 import os
 import sqlite3
-import traceback
+from collections.abc import Iterable, Iterator
 from contextlib import closing, contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
 from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import TYPE_CHECKING, Any, Callable, Iterator, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, TypeVar
 
 from sqlalchemy import (
     JSON,
@@ -45,7 +46,7 @@ from sqlalchemy import (
     text as sa_text,
 )
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import DataError, IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 from .accounts import AccountStore, current_account
@@ -71,7 +72,10 @@ from .workflow import WorkflowEvent
 if TYPE_CHECKING:
     from .entity import Document, Entity
 
+T = TypeVar("T")
 TEntity = TypeVar("TEntity", bound="Entity")
+
+logger = logging.getLogger(__name__)
 
 Base = declarative_base()
 
@@ -121,6 +125,52 @@ _LIST_VARIANTS = Table(
 )
 
 
+def _chunked(items: Iterable[T], size: int = 500) -> Iterator[list[T]]:
+    batch: list[T] = []
+    for item in items:
+        batch.append(item)
+        if len(batch) >= size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
+
+
+def _translate_sql_error(action: str, exc: SQLAlchemyError) -> ValueError | RuntimeError:
+    """Log the underlying SQLAlchemy exception and return a user-safe Russian error."""
+    logger.error("Ошибка базы данных при %s: %s", action, exc, exc_info=exc)
+    orig: Any = getattr(exc, "orig", None)
+    upper = str(orig if orig is not None else exc).upper()
+
+    if "UNIQUE CONSTRAINT" in upper:
+        return ValueError("Нарушена уникальность: запись с таким значением уже существует.")
+    if "FOREIGN KEY CONSTRAINT" in upper:
+        return ValueError(
+            "Операция невозможна: на запись ссылаются другие данные или указана несуществующая ссылка."
+        )
+    if "NOT NULL CONSTRAINT" in upper:
+        return ValueError("Не заполнено обязательное поле.")
+    if "CHECK CONSTRAINT" in upper:
+        return ValueError("Значение не соответствует ограничениям базы данных.")
+    if isinstance(exc, IntegrityError):
+        return ValueError(f"Нарушена целостность данных при {action}.")
+    if "LOCKED" in upper or "BUSY" in upper:
+        return RuntimeError("База данных временно заблокирована другим процессом. Повторите попытку.")
+    if "READONLY" in upper or "READ-ONLY" in upper:
+        return RuntimeError("База данных открыта только для чтения.")
+    if "NO SUCH TABLE" in upper or "NO SUCH COLUMN" in upper:
+        return RuntimeError("Структура базы данных не соответствует текущей схеме приложения.")
+    if "DISK I/O" in upper or "MALFORMED" in upper or "NOT A DATABASE" in upper or "CORRUPT" in upper:
+        return RuntimeError("Файл базы данных повреждён или недоступен для чтения и записи.")
+    if "DISK" in upper and "FULL" in upper:
+        return RuntimeError("Недостаточно места на диске для записи в базу данных.")
+    if isinstance(exc, DataError):
+        return ValueError(f"Некорректный формат или размер данных при {action}.")
+    if isinstance(exc, OperationalError):
+        return RuntimeError(f"Ошибка доступа к базе данных при {action}. Подробности записаны в журнал.")
+    return RuntimeError(f"Ошибка базы данных при {action}. Подробности записаны в журнал.")
+
+
 def _enable_fk(dbapi_con: Any, _con_record: Any) -> None:
     try:
         cursor = dbapi_con.cursor()
@@ -128,7 +178,7 @@ def _enable_fk(dbapi_con: Any, _con_record: Any) -> None:
         cursor.execute("PRAGMA busy_timeout = 5000")
         cursor.close()
     except Exception:
-        pass  # non-SQLite engines may not support this
+        logger.warning("Не удалось настроить параметры подключения SQLite.", exc_info=True)
 
 
 def _coerce_to_db(field: Field, val: Any) -> Any:
@@ -164,6 +214,30 @@ def _coerce_from_db(field: Field, val: Any) -> Any:
     return val
 
 
+def _date_range_conditions(column: Any, field: Field | None, bounds: Any) -> list[Any]:
+    if not isinstance(field, (DateField, DateTimeField)):
+        raise ValueError("Оператор __date_range доступен только для полей Date и DateTime.")
+    if not isinstance(bounds, (tuple, list)) or len(bounds) != 2 or any(
+        bound is not None
+        and (not isinstance(bound, datetime.date) or isinstance(bound, datetime.datetime))
+        for bound in bounds
+    ):
+        raise ValueError("Передайте две границы периода как даты (datetime.date) или None.")
+
+    start, end = bounds
+    if start is not None and end is not None and start > end:
+        raise ValueError("Начало периода должно быть не позже его окончания.")
+
+    conditions = []
+    if start is not None:
+        lower = datetime.datetime.combine(start, datetime.time.min) if isinstance(field, DateTimeField) else start
+        conditions.append(column >= lower)
+    if end is not None:
+        upper = datetime.datetime.combine(end, datetime.time.max) if isinstance(field, DateTimeField) else end
+        conditions.append(column <= upper)
+    return conditions
+
+
 class Database:
     """Persistence layer — creates SQLAlchemy models, manages sessions, CRUD."""
 
@@ -176,6 +250,19 @@ class Database:
         self._path = path
         self._ready = False
         self._migration_messages: list[str] = []
+        self._base = declarative_base()
+        for table in Base.metadata.tables.values():
+            if table.name.startswith("_erp_"):
+                table.to_metadata(self._base.metadata)
+        self._workflow_events_table = self._base.metadata.tables["_erp_workflow_events"]
+        self._report_variants_table = self._base.metadata.tables["_erp_report_variants"]
+        self._list_settings_table = self._base.metadata.tables["_erp_list_settings"]
+        self._list_variants_table = self._base.metadata.tables["_erp_list_variants"]
+        self._entity_models: dict[type, type] = {}
+        self._tp_models: dict[tuple[type, str], type] = {}
+        self._register_models: dict[type, type] = {}
+        self._table_names: dict[type, str] = {}
+        self._tp_table_names: dict[tuple[type, str], str] = {}
         self._write_state: ContextVar[tuple[Session, list[Callable[[], None]]] | None] = (
             ContextVar("write_state", default=None)
         )
@@ -190,13 +277,23 @@ class Database:
             self.numbering = NumberingService(self._engine)
             self._prepare_models()
             self._auto_upgrade(column_renames or {}, table_part_renames or {})
-            Base.metadata.create_all(self._engine)
+            self._base.metadata.create_all(self._engine)
             self._save_schema_hash()
             self._ready = True
         except SQLAlchemyError as exc:
-            self._last_error = f"Ошибка SQL: {exc}\n{traceback.format_exc()}"
+            self._last_error = str(_translate_sql_error("инициализации базы данных", exc))
         except Exception as exc:
-            self._last_error = f"Ошибка: {exc}\n{traceback.format_exc()}"
+            logger.exception("Ошибка при инициализации базы данных")
+            self._last_error = str(exc) or type(exc).__name__
+
+    def _get_entity_model(self, entity_class: type) -> type | None:
+        return self._entity_models.get(entity_class)
+
+    def _get_tp_model(self, entity_class: type, tp_name: str) -> type | None:
+        return self._tp_models.get((entity_class, tp_name))
+
+    def _get_register_model(self, register_cls: type) -> type | None:
+        return self._register_models.get(register_cls)
 
     @classmethod
     def memory(cls, echo: bool = False) -> Database:
@@ -207,6 +304,30 @@ class Database:
     # Auto schema upgrade
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _field_schema_signature(name: str, field: Field) -> str:
+        info = (
+            f"{name}:{type(field).__name__}:{field.field_type}:"
+            f"{field.required}:{field.unique}:{field.indexed}"
+        )
+        if hasattr(field, "precision"):
+            info += f":{getattr(field, 'precision')}:{getattr(field, 'scale')}"
+        if hasattr(field, "max_length"):
+            info += f":{getattr(field, 'max_length')}"
+        if hasattr(field, "multiline"):
+            info += f":{getattr(field, 'multiline')}"
+        if hasattr(field, "min_value"):
+            info += f":{getattr(field, 'min_value')}"
+        if hasattr(field, "max_value"):
+            info += f":{getattr(field, 'max_value')}"
+        if hasattr(field, "target"):
+            tgt = getattr(field, "target")
+            tname = tgt.__name__ if isinstance(tgt, type) else str(tgt)
+            info += f":{tname}"
+            if isinstance(field, RefField) and field.on_delete != "RESTRICT":
+                info += f":{field.on_delete}"
+        return info
+
     def _schema_hash(self) -> str:
         """Compute a deterministic hash of registered entities and registers."""
         import hashlib
@@ -216,40 +337,20 @@ class Database:
         for cls in sorted(get_all_entities(), key=lambda c: c.__name__):
             h.update(cls.__name__.encode())
             for name, field in cls._meta.fields.items():
-                info = (
-                    f"{name}:{type(field).__name__}:{field.field_type}:"
-                    f"{field.required}:{field.unique}:{field.indexed}"
-                )
-                if hasattr(field, "precision"):
-                    info += f":{getattr(field, 'precision')}:{getattr(field, 'scale')}"
-                if hasattr(field, "max_length"):
-                    info += f":{getattr(field, 'max_length')}"
-                if hasattr(field, "multiline"):
-                    info += f":{getattr(field, 'multiline')}"
-                if hasattr(field, "min_value"):
-                    info += f":{getattr(field, 'min_value')}"
-                if hasattr(field, "max_value"):
-                    info += f":{getattr(field, 'max_value')}"
-                if hasattr(field, "target"):
-                    tgt = getattr(field, "target")
-                    tname = tgt.__name__ if isinstance(tgt, type) else str(tgt)
-                    info += f":{tname}"
-                    if isinstance(field, RefField) and field.on_delete != "RESTRICT":
-                        info += f":{field.on_delete}"
-                h.update(info.encode())
+                h.update(self._field_schema_signature(name, field).encode())
             for tp_name, tp in cls._meta.table_parts.items():
                 h.update(f"tp:{tp_name}".encode())
                 for fname, ffield in tp.fields.items():
-                    h.update(
-                        f"{fname}:{type(ffield).__name__}:{ffield.field_type}:{ffield.required}".encode()
-                    )
+                    h.update(self._field_schema_signature(fname, ffield).encode())
         for reg in sorted(get_all_registers(), key=lambda r: r.__name__):
             rmeta = reg._register_meta
             h.update(f"reg:{rmeta.name}:{rmeta.register_type}".encode())
             for dn, dv in rmeta.dimensions.items():
-                h.update(f"dim:{dn}:{dv.field_type}".encode())
+                tgt = getattr(dv, "target", None)
+                tname = tgt.__name__ if isinstance(tgt, type) else (str(tgt) if tgt is not None else "")
+                h.update(f"dim:{dn}:{dv.field_type}:{dv.required}:{tname}".encode())
             for rn, rv in rmeta.resources.items():
-                h.update(f"res:{rn}:{rv.field_type}".encode())
+                h.update(f"res:{rn}:{rv.field_type}:{rv.required}".encode())
         return h.hexdigest()[:12]
 
     def _save_schema_hash(self) -> None:
@@ -264,22 +365,24 @@ class Database:
                 )
                 conn.commit()
         except Exception:
-            pass
+            logger.warning("Не удалось сохранить хеш схемы базы данных.", exc_info=True)
 
     def _column_rename_plan(self, renames: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:
         tables: dict[str, str] = {}
         for entity in get_all_entities():
-            tables[entity.__name__] = entity._meta.table_name
+            tables[entity.__name__] = self._table_names.get(entity, self._table_name(entity))
             tables.update({
-                f"{entity.__name__}.{name}": part.table_name
-                for name, part in entity._meta.table_parts.items()
+                f"{entity.__name__}.{name}": self._tp_table_names.get(
+                    (entity, name), f"{self._table_name(entity)}_{self._table_name_str(name)}",
+                )
+                for name in entity._meta.table_parts
             })
         result = {}
         for name, changes in renames.items():
             table_name = tables.get(name)
             if table_name is None:
                 raise ValueError(f"Переименование столбцов: объект «{name}» не найден.")
-            columns = set(Base.metadata.tables[table_name].columns.keys())
+            columns = set(self._base.metadata.tables[table_name].columns.keys())
             targets = set(changes.values())
             if (
                 len(targets) != len(changes) or not targets <= columns
@@ -293,21 +396,23 @@ class Database:
         entities = {entity.__name__: entity for entity in get_all_entities()}
         plan: dict[str, str] = {}
         destinations: set[str] = set()
-        known_tables = {name.casefold() for name in Base.metadata.tables}
+        known_tables = {name.casefold() for name in self._base.metadata.tables}
         for name, changes in renames.items():
             entity = entities.get(name)
             if entity is None:
                 raise ValueError(f"Переименование таблиц: объект «{name}» не найден.")
+            parent_table = self._table_names.get(entity, self._table_name(entity))
             for old, new in changes.items():
                 part = entity._meta.table_parts.get(new)
-                source = f"{entity._meta.table_name}_{self._table_name_str(old)}"
+                source = f"{parent_table}_{self._table_name_str(old)}"
+                dest = self._tp_table_names.get((entity, new), part.table_name if part is not None else "")
                 if (
                     part is None or source.casefold() in known_tables
-                    or source in plan or part.table_name in destinations
+                    or source in plan or dest in destinations
                 ):
                     raise ValueError(f"Переименование таблиц для «{name}»: проверьте «{old}» и «{new}».")
-                plan[source] = part.table_name
-                destinations.add(part.table_name)
+                plan[source] = dest
+                destinations.add(dest)
         return plan
 
     def _auto_upgrade(
@@ -344,7 +449,7 @@ class Database:
                 existing_tables.remove(old)
                 existing_tables.add(new)
                 messages.append(f"Переименована таблица: «{old}» → «{new}».")
-            for table in Base.metadata.sorted_tables:
+            for table in self._base.metadata.sorted_tables:
                 if table.name not in existing_tables:
                     if table.name in plan:
                         messages.append(f"Таблица «{table.name}» отсутствует. Колонки создаются вместе с ней.")
@@ -377,6 +482,16 @@ class Database:
                     conn.exec_driver_sql(
                         f"ALTER TABLE {quote(table.name)} ADD COLUMN {quote(col.name)} {col_type}"
                     )
+                    if col.unique:
+                        uq_name = f"uq_{table.name}_{col.name}"
+                        conn.exec_driver_sql(
+                            f"CREATE UNIQUE INDEX IF NOT EXISTS {quote(uq_name)} "
+                            f"ON {quote(table.name)} ({quote(col.name)})"
+                        )
+                existing_indexes = {idx["name"] for idx in inspector.get_indexes(table.name)}
+                for idx in table.indexes:
+                    if idx.name and idx.name not in existing_indexes:
+                        idx.create(conn)
 
         self._migration_messages = messages
 
@@ -385,7 +500,10 @@ class Database:
     # ------------------------------------------------------------------
 
     def _prepare_models(self) -> None:
-        for entity_class in get_all_entities():
+        entities = get_all_entities()
+        for entity_class in entities:
+            entity_class._meta.prepare_choice_filters()
+        for entity_class in entities:
             owner = entity_class.__owner_field__
             fields = entity_class._meta.fields
             restrictions = (entity_class.__field_write_roles__ or {}).keys() | (entity_class.__field_read_roles__ or {}).keys()
@@ -406,17 +524,17 @@ class Database:
             if owner is not None or entity_class.__permissions__ is not None:
                 if any(isinstance(item, RefField) and item.on_delete == "CASCADE" for item in fields.values()):
                     raise ValueError(f"{entity_class.__name__}: защищённая запись требует удаления через API DECUI.")
-            if entity_class._meta.orm_model is None:
+            if entity_class not in self._entity_models:
                 self._create_model(entity_class)
             for tp_name, tp in entity_class._meta.table_parts.items():
-                if tp.orm_model is None:
+                if (entity_class, tp_name) not in self._tp_models:
                     self._create_tp_model(entity_class, tp_name, tp)
-        create_register_models(self._engine, Base)
+        create_register_models(self._engine, self._base, models=self._register_models)
 
     def _init_models(self) -> None:
         """Backward-compatible wrapper ensuring models and tables exist."""
         self._prepare_models()
-        Base.metadata.create_all(self._engine)
+        self._base.metadata.create_all(self._engine)
 
     def _create_model(self, entity_class: type) -> type:
         table_name = self._table_name(entity_class)
@@ -428,7 +546,9 @@ class Database:
         for name, field in entity_class._meta.fields.items():
             attrs[name] = self._column_for_field(field)
 
-        model = type(f"{entity_class.__name__}Model", (Base,), attrs)
+        model = type(f"{entity_class.__name__}Model", (self._base,), attrs)
+        self._entity_models[entity_class] = model
+        self._table_names[entity_class] = table_name
         entity_class._meta.orm_model = model
         entity_class._meta.table_name = table_name
         return model
@@ -453,7 +573,9 @@ class Database:
         }
         for name, field in tp.fields.items():
             attrs[name] = self._column_for_field(field)
-        model = type(f"{parent_class.__name__}_{tp_name}Model", (Base,), attrs)
+        model = type(f"{parent_class.__name__}_{tp_name}Model", (self._base,), attrs)
+        self._tp_models[(parent_class, tp_name)] = model
+        self._tp_table_names[(parent_class, tp_name)] = table_name
         tp.orm_model = model
         tp.table_name = table_name
         return model
@@ -530,89 +652,116 @@ class Database:
     def list_settings(self, entity: type) -> dict[str, Any] | None:
         self._check_ready()
         account = current_account()
-        table = _LIST_SETTINGS
-        with self.session() as session:
-            return session.scalar(select(table.c.settings).where(
-                table.c.owner == (account.login if account else ""),
-                table.c.entity == entity.__name__,
-            ))
+        table = self._list_settings_table
+        try:
+            with self.session() as session:
+                return session.scalar(select(table.c.settings).where(
+                    table.c.owner == (account.login if account else ""),
+                    table.c.entity == entity.__name__,
+                ))
+        except SQLAlchemyError as exc:
+            raise _translate_sql_error("чтении настроек списка", exc) from exc
 
     def save_list_settings(self, entity: type, settings: dict[str, Any]) -> None:
         self._check_ready()
         account = current_account()
-        statement = sqlite_insert(_LIST_SETTINGS).values(
+        table = self._list_settings_table
+        statement = sqlite_insert(table).values(
             owner=account.login if account else "", entity=entity.__name__, settings=settings,
         )
-        with self.session() as session:
-            session.execute(statement.on_conflict_do_update(
-                index_elements=["owner", "entity"], set_={"settings": statement.excluded.settings},
-            ))
+        try:
+            with self.session() as session:
+                session.execute(statement.on_conflict_do_update(
+                    index_elements=["owner", "entity"], set_={"settings": statement.excluded.settings},
+                ))
+        except SQLAlchemyError as exc:
+            raise _translate_sql_error("сохранении настроек списка", exc) from exc
 
     def list_variants(self, entity: type) -> dict[str, dict[str, Any]]:
         self._check_ready()
         account = current_account()
-        table = _LIST_VARIANTS
+        table = self._list_variants_table
         query = select(table.c.name, table.c.settings).where(
             table.c.owner == (account.login if account else ""),
             table.c.entity == entity.__name__,
         ).order_by(table.c.name)
-        with self.session() as session:
-            return {name: settings for name, settings in session.execute(query)}
+        try:
+            with self.session() as session:
+                return {name: settings for name, settings in session.execute(query)}
+        except SQLAlchemyError as exc:
+            raise _translate_sql_error("чтении вариантов списка", exc) from exc
 
     def save_list_variant(self, entity: type, name: str, settings: dict[str, Any]) -> None:
         self._check_ready()
         account = current_account()
-        statement = sqlite_insert(_LIST_VARIANTS).values(
+        table = self._list_variants_table
+        statement = sqlite_insert(table).values(
             owner=account.login if account else "", entity=entity.__name__, name=name, settings=settings,
         )
-        with self.session() as session:
-            session.execute(statement.on_conflict_do_update(
-                index_elements=["owner", "entity", "name"], set_={"settings": statement.excluded.settings},
-            ))
+        try:
+            with self.session() as session:
+                session.execute(statement.on_conflict_do_update(
+                    index_elements=["owner", "entity", "name"], set_={"settings": statement.excluded.settings},
+                ))
+        except SQLAlchemyError as exc:
+            raise _translate_sql_error("сохранении варианта списка", exc) from exc
 
     def delete_list_variant(self, entity: type, name: str) -> None:
         self._check_ready()
         account = current_account()
-        table = _LIST_VARIANTS
-        with self.session() as session:
-            session.execute(table.delete().where(
-                table.c.owner == (account.login if account else ""),
-                table.c.entity == entity.__name__, table.c.name == name,
-            ))
+        table = self._list_variants_table
+        try:
+            with self.session() as session:
+                session.execute(table.delete().where(
+                    table.c.owner == (account.login if account else ""),
+                    table.c.entity == entity.__name__, table.c.name == name,
+                ))
+        except SQLAlchemyError as exc:
+            raise _translate_sql_error("удалении варианта списка", exc) from exc
 
     def report_variants(self, report: str) -> dict[str, dict[str, Any]]:
         """Read named report settings for the current application user."""
         self._check_ready()
         account = current_account()
-        variants = _REPORT_VARIANTS
+        variants = self._report_variants_table
         query = select(variants.c.name, variants.c.params).where(
             variants.c.owner == (account.login if account else ""),
             variants.c.report == report,
         ).order_by(variants.c.name)
-        with self.session() as session:
-            return {name: params for name, params in session.execute(query)}
+        try:
+            with self.session() as session:
+                return {name: params for name, params in session.execute(query)}
+        except SQLAlchemyError as exc:
+            raise _translate_sql_error("чтении вариантов отчёта", exc) from exc
 
     def save_report_variant(self, report: str, name: str, params: dict[str, Any]) -> None:
         self._check_ready()
         account = current_account()
-        statement = sqlite_insert(_REPORT_VARIANTS).values(
+        variants = self._report_variants_table
+        statement = sqlite_insert(variants).values(
             owner=account.login if account else "", report=report, name=name, params=params,
         )
-        with self.session() as session:
-            session.execute(statement.on_conflict_do_update(
-                index_elements=["owner", "report", "name"], set_={"params": statement.excluded.params},
-            ))
+        try:
+            with self.session() as session:
+                session.execute(statement.on_conflict_do_update(
+                    index_elements=["owner", "report", "name"], set_={"params": statement.excluded.params},
+                ))
+        except SQLAlchemyError as exc:
+            raise _translate_sql_error("сохранении варианта отчёта", exc) from exc
 
     def delete_report_variant(self, report: str, name: str) -> None:
         self._check_ready()
         account = current_account()
-        variants = _REPORT_VARIANTS
-        with self.session() as session:
-            session.execute(variants.delete().where(
-                variants.c.owner == (account.login if account else ""),
-                variants.c.report == report,
-                variants.c.name == name,
-            ))
+        variants = self._report_variants_table
+        try:
+            with self.session() as session:
+                session.execute(variants.delete().where(
+                    variants.c.owner == (account.login if account else ""),
+                    variants.c.report == report,
+                    variants.c.name == name,
+                ))
+        except SQLAlchemyError as exc:
+            raise _translate_sql_error("удалении варианта отчёта", exc) from exc
 
     @contextmanager
     def transaction(self) -> Iterator[None]:
@@ -749,8 +898,8 @@ class Database:
                 continue
             rows = entity._table_data.get(part_name, [])
             stored = []
-            part_model = part.orm_model
-            if not creating:
+            part_model = self._get_tp_model(type(entity), part_name)
+            if not creating and part_model is not None:
                 stored = sess.query(part_model).filter_by(parent_id=entity._id).order_by(part_model.id).all()
             if len(rows) < len(stored):
                 raise PermissionError(f"Текущая роль не может удалить строки из «{part.verbose_name}».")
@@ -779,6 +928,13 @@ class Database:
 
     def can_delete(self, entity: Entity) -> bool:
         return self.allows(type(entity), "delete") and self._can_write_record(entity)
+
+    @staticmethod
+    def _require_full_entity(entity: Entity) -> None:
+        if not entity._table_parts_loaded:
+            raise ValueError(
+                f"Перед изменением загрузите табличные части через db.get({type(entity).__name__}, {entity.id})."
+            )
 
     def _remember_entity_for_rollback(self, entity: Entity) -> None:
         data = deepcopy(entity._data)
@@ -826,6 +982,7 @@ class Database:
             raise ValueError(f"Команда «{name}» не найдена.")
         if not self.allows_command(type(entity), name):
             raise PermissionError("Команда недоступна для текущей роли.")
+        self._require_full_entity(entity)
         with self._write_transaction():
             self._remember_entity_for_rollback(entity)
             command.execute(entity)
@@ -843,6 +1000,7 @@ class Database:
             raise TypeError("Провести можно только документ.")
         if not self.can_post(document):
             raise PermissionError("Проведение документа недоступно.")
+        self._require_full_entity(document)
         errors = document.validate()
         if errors:
             raise ValueError("\n".join(errors))
@@ -912,7 +1070,9 @@ class Database:
         for entity_class in get_all_entities():
             if not entity_class.__owner_field__ and entity_class.__permissions__ is None and not entity_class.__field_read_roles__:
                 continue
-            document_model = entity_class._meta.orm_model
+            document_model = self._get_entity_model(entity_class)
+            if document_model is None:
+                continue
             action = "post" if write else "read"
             condition = (
                 self._owner_condition(entity_class, document_model)
@@ -936,8 +1096,8 @@ class Database:
                 raise PermissionError("Закрытые реквизиты документа не позволяют записать движения.")
             if not entity_class.__owner_field__ and entity_class.__permissions__ is None:
                 return
-            model = entity_class._meta.orm_model
-            if self._visible_query(sess, entity_class, model, write=True).filter(model.id == doc_id).first() is None:
+            model = self._get_entity_model(entity_class)
+            if model is None or self._visible_query(sess, entity_class, model, write=True).filter(model.id == doc_id).first() is None:
                 raise PermissionError("Документ регистра недоступен для текущего пользователя.")
             return
 
@@ -953,7 +1113,6 @@ class Database:
         self,
         model: Any,
         entity_class: type[TEntity],
-        sess: Session | None = None,
     ) -> TEntity:
         data: dict[str, Any] = {}
         masked = self.masked_fields(entity_class)
@@ -971,27 +1130,46 @@ class Database:
         if workflow is not None:
             object.__setattr__(instance, "_workflow_state", data[workflow.field])
         object.__setattr__(instance, "_id", model.id)
-        if sess is not None:
-            from .entity import LineItemsCollection
-            for tp_name, tp in entity_class._meta.table_parts.items():
-                model_class = tp.orm_model
-                rows = (
-                    sess.query(model_class)
-                    .filter_by(parent_id=model.id)
-                    .order_by(model_class.id)
-                    .all()
-                )
-                table_data: list[dict[str, Any]] = []
-                for row in rows:
-                    row_dict: dict[str, Any] = {}
-                    for fname, fdef in tp.fields.items():
-                        row_dict[fname] = (None if f"{tp_name}.{fname}" in masked
-                                           else _coerce_from_db(fdef, getattr(row, fname)))
-                    table_data.append(row_dict)
-                instance._table_data[tp_name] = LineItemsCollection(
-                    table_data, parent=instance, tp_meta=tp
-                )
+        instance._table_parts_loaded = not entity_class._meta.table_parts
         return instance
+
+    def _read_entities(
+        self, sess: Session, query: Any, entity_class: type[TEntity], include_table_parts: bool,
+    ) -> list[TEntity]:
+        parts = entity_class._meta.table_parts if include_table_parts else {}
+        if include_table_parts and (parts or entity_class.__owner_field__) and self._write_state.get() is None:
+            # SQLite's default transaction mode does not start a transaction on SELECT.
+            sess.connection().exec_driver_sql("BEGIN")
+        entities = [self._model_to_entity(model, entity_class) for model in query.all()]
+        if parts and entities:
+            self._load_table_parts(sess, entity_class, entities)
+        return entities
+
+    def _load_table_parts(self, sess: Session, entity_class: type[TEntity], entities: list[TEntity]) -> None:
+        from .entity import LineItemsCollection
+
+        by_id = {entity.id: entity for entity in entities}
+        ids = list(by_id)
+        masked = self.masked_fields(entity_class)
+        for name, part in entity_class._meta.table_parts.items():
+            model = self._get_tp_model(entity_class, name)
+            for entity in entities:
+                entity._table_data[name] = LineItemsCollection(parent=entity, tp_meta=part)
+            if model is None:
+                continue
+            # Keep IN lists within SQLite's bind-parameter limit.
+            for batch in _chunked(ids, 500):
+                rows = sess.query(model).filter(model.parent_id.in_(batch)).order_by(model.id)
+                for row in rows:
+                    by_id[row.parent_id]._table_data[name].append({
+                        field_name: (
+                            None if f"{name}.{field_name}" in masked
+                            else _coerce_from_db(field, getattr(row, field_name))
+                        )
+                        for field_name, field in part.fields.items()
+                    })
+        for entity in entities:
+            entity._table_parts_loaded = True
 
     def save(
         self, entity: TEntity, *, validate: bool = False, _workflow_action: str | None = None, _assigning_workflow: bool = False, _approval_only: bool = False,
@@ -999,36 +1177,26 @@ class Database:
         """Persist an entity (insert if new, update if existing)."""
         self._check_ready()
         self._require_permission(type(entity), "read" if _approval_only else ("create" if entity._id is None else "update"))
+        self._require_full_entity(entity)
         if validate:
             errs = entity.validate()
             if errs:
                 raise ValueError("\n".join(errs))
 
-        model_class = entity._meta.orm_model
+        model_class = self._get_entity_model(type(entity))
         if model_class is None:
             self._prepare_models()
-            Base.metadata.create_all(self._engine)
-            model_class = entity._meta.orm_model
+            self._base.metadata.create_all(self._engine)
+            model_class = self._get_entity_model(type(entity))
         if model_class is None:
             raise RuntimeError(f"Модель для {type(entity).__name__} не создана")
 
-        original_data = entity._data.copy()
-        original_id = entity._id
         workflow = entity.__workflow__
         original_state = getattr(entity, "_workflow_state", None)
 
-        def restore_entity() -> None:
-            entity._data.clear()
-            entity._data.update(original_data)
-            object.__setattr__(entity, "_id", original_id)
-            if workflow is not None:
-                object.__setattr__(entity, "_workflow_state", original_state)
-
         try:
             with self._write_transaction() as sess:
-                state = self._write_state.get()
-                assert state is not None
-                state[1].append(restore_entity)
+                self._remember_entity_for_rollback(entity)
                 creating = entity._id is None
                 if creating:
                     model = model_class()
@@ -1112,15 +1280,16 @@ class Database:
                     self._save_table_parts(entity, sess, creating=creating)
                 if workflow_event is not None:
                     previous, target = workflow_event
-                    sess.execute(_WORKFLOW_EVENTS.insert().values(
-                        entity=entity._meta.table_name, entity_id=entity._id,
+                    entity_table = self._table_names.get(type(entity), entity._meta.table_name)
+                    sess.execute(self._workflow_events_table.insert().values(
+                        entity=entity_table, entity_id=entity._id,
                         occurred_at=datetime.datetime.now(datetime.UTC).replace(tzinfo=None),
                         source=previous, target=target, action=event_action, role=role, login=login,
                     ))
                 sess.flush()
                 entity.after_save(self)
         except SQLAlchemyError as exc:
-            raise RuntimeError(f"Ошибка SQL при сохранении: {exc}") from exc
+            raise _translate_sql_error("сохранении", exc) from exc
         masked = self.masked_fields(type(entity))
         if masked:
             object.__setattr__(entity, "_masked_fields", masked)
@@ -1187,32 +1356,39 @@ class Database:
         self._check_ready()
         if entity._id is None or entity.__workflow__ is None:
             return []
-        events = _WORKFLOW_EVENTS.c
-        record = (events.entity == entity._meta.table_name, events.entity_id == entity._id)
+        workflow_events = self._workflow_events_table
+        events = workflow_events.c
+        entity_table = self._table_names.get(type(entity), entity._meta.table_name)
+        record = (events.entity == entity_table, events.entity_id == entity._id)
         start = (
             select(func.coalesce(func.max(events.id), 0))
             .where(*record, events.source.is_(None))
             .scalar_subquery()
         )
         # A creation event separates records if SQLite reuses a deleted row's id.
-        query = select(_WORKFLOW_EVENTS).where(*record, events.id >= start).order_by(events.id.desc())
-        model = entity._meta.orm_model
+        query = select(workflow_events).where(*record, events.id >= start).order_by(events.id.desc())
+        model = self._get_entity_model(type(entity))
         if model is not None:
             condition = self._read_condition(type(entity), model)
             if condition is not None:
                 query = query.where(events.entity_id.in_(select(model.id).where(condition)))
-        with self.session() as session:
-            return [
-                WorkflowEvent(
-                    event.occurred_at.replace(tzinfo=datetime.UTC), event.source, event.target, event.action, event.role, event.login,
-                )
-                for event in session.execute(query)
-            ]
+        try:
+            with self.session() as session:
+                return [
+                    WorkflowEvent(
+                        event.occurred_at.replace(tzinfo=datetime.UTC), event.source, event.target, event.action, event.role, event.login,
+                    )
+                    for event in session.execute(query)
+                ]
+        except SQLAlchemyError as exc:
+            raise _translate_sql_error("чтении истории согласования", exc) from exc
 
     def _save_table_parts(self, entity: Entity, sess: Session, *, creating: bool) -> None:
         masked = self.masked_fields(type(entity)) if not creating else set()
         for tp_name, tp in entity._meta.table_parts.items():
-            model_class = tp.orm_model
+            model_class = self._get_tp_model(type(entity), tp_name)
+            if model_class is None:
+                continue
             parent_id = entity._id
             query = sess.query(model_class).filter_by(parent_id=parent_id)
             hidden_columns = [name for name in tp.fields if f"{tp_name}.{name}" in masked]
@@ -1295,32 +1471,29 @@ class Database:
     def get(self, entity_class: type[TEntity], id: int) -> TEntity | None:
         """Load a single entity by primary key (includes table part rows)."""
         self._check_ready()
-        model_class = entity_class._meta.orm_model
+        model_class = self._get_entity_model(entity_class)
         if model_class is None:
             raise RuntimeError(f"Модель для {entity_class.__name__} не создана")
         try:
             with self.session() as sess:
-                if entity_class.__owner_field__ and self._write_state.get() is None:
-                    sess.connection().exec_driver_sql("BEGIN")
-                model = self._visible_query(sess, entity_class, model_class).filter_by(id=id).first()
-                if model is None:
-                    return None
-                return self._model_to_entity(model, entity_class, sess)
+                query = self._visible_query(sess, entity_class, model_class).filter_by(id=id).limit(1)
+                entities = self._read_entities(sess, query, entity_class, include_table_parts=True)
+                return entities[0] if entities else None
         except SQLAlchemyError as exc:
-            raise RuntimeError(f"Ошибка SQL при загрузке: {exc}") from exc
+            raise _translate_sql_error("загрузке", exc) from exc
 
-    def list(self, entity_class: type[TEntity]) -> list[TEntity]:
-        """Return all entities (without table part rows — use ``get`` for those)."""
+    def list(self, entity_class: type[TEntity], *, include_table_parts: bool = False) -> list[TEntity]:
+        """Return all visible entities, optionally including table part rows."""
         self._check_ready()
-        model_class = entity_class._meta.orm_model
+        model_class = self._get_entity_model(entity_class)
         if model_class is None:
             raise RuntimeError(f"Модель для {entity_class.__name__} не создана")
         try:
             with self.session() as sess:
-                rows = self._visible_query(sess, entity_class, model_class).all()
-                return [self._model_to_entity(r, entity_class) for r in rows]
+                query = self._visible_query(sess, entity_class, model_class)
+                return self._read_entities(sess, query, entity_class, include_table_parts)
         except SQLAlchemyError as exc:
-            raise RuntimeError(f"Ошибка SQL при чтении списка: {exc}") from exc
+            raise _translate_sql_error("чтении списка", exc) from exc
 
     def filter(
         self,
@@ -1328,6 +1501,7 @@ class Database:
         *,
         order_by: str | None = None,
         limit: int | None = None,
+        include_table_parts: bool = False,
         **kwargs: Any,
     ) -> list[TEntity]:
         """Return entities matching criteria.
@@ -1335,9 +1509,11 @@ class Database:
         Supports Django-style lookup suffixes:
           ``__gt``, ``__gte``, ``__lt``, ``__lte``, ``__ne``,
           ``__in``, ``__contains``, ``__icontains``, ``__isnull``, ``__between=(lower, upper)``.
+        Use ``__date_range=(start, end)`` for inclusive calendar dates on Date or DateTime fields.
+        Either bound may be None. Set ``include_table_parts=True`` to load table part rows.
         """
         self._check_ready()
-        model_class = entity_class._meta.orm_model
+        model_class = self._get_entity_model(entity_class)
         if model_class is None:
             raise RuntimeError(f"Модель для {entity_class.__name__} не создана")
         try:
@@ -1358,6 +1534,9 @@ class Database:
                     col = getattr(model_class, field_name)
                     fdef = entity_class._meta.fields.get(field_name)
 
+                    if op == "date_range":
+                        query = query.filter(*_date_range_conditions(col, fdef, raw_val))
+                        continue
                     if op == "isnull":
                         query = query.filter(col.is_(None) if raw_val else col.is_not(None))
                         continue
@@ -1413,10 +1592,9 @@ class Database:
                 if limit is not None:
                     query = query.limit(limit)
 
-                rows = query.all()
-                return [self._model_to_entity(r, entity_class) for r in rows]
+                return self._read_entities(sess, query, entity_class, include_table_parts)
         except SQLAlchemyError as exc:
-            raise RuntimeError(f"Ошибка SQL при фильтрации: {exc}") from exc
+            raise _translate_sql_error("фильтрации", exc) from exc
 
     def initialize(self, setup: Callable[[Database], None]) -> bool:
         """Run a first-launch callback once per database, in one transaction."""
@@ -1429,8 +1607,12 @@ class Database:
         return True
 
     def seed(self, entities: list[TEntity]) -> list[TEntity]:
-        """Save a batch list of entities."""
-        return [self.save(e) for e in entities]
+        """Save a batch list of entities atomically in one transaction."""
+        self._check_ready()
+        if not entities:
+            return []
+        with self._write_transaction():
+            return [self.save(e) for e in entities]
 
     def delete(self, entity: Entity) -> None:
         """Delete an entity and run its hooks in the same transaction."""
@@ -1438,7 +1620,7 @@ class Database:
         if entity._id is None:
             return
         self._require_permission(type(entity), "delete")
-        model_class = entity._meta.orm_model
+        model_class = self._get_entity_model(type(entity))
         if model_class is None:
             raise RuntimeError(f"Модель для {type(entity).__name__} не создана")
         try:
@@ -1448,18 +1630,16 @@ class Database:
                     raise PermissionError("Запись недоступна для текущего пользователя.")
                 if model is not None:
                     entity.before_delete(self)
-                    if entity._meta.is_document and (
-                        entity.__owner_field__ or entity.__permissions__ is not None or entity.__field_read_roles__
-                    ):
+                    if entity._meta.is_document:
                         for register in get_all_registers():
-                            movement = register._register_meta.orm_model
+                            movement = self._get_register_model(register)
                             if movement is not None:
                                 sess.query(movement).filter_by(doc_id=entity._id, doc_type=type(entity).__name__).delete()
                     sess.delete(model)
                     sess.flush()
                     entity.after_delete(self)
         except SQLAlchemyError as exc:
-            raise RuntimeError(f"Ошибка SQL при удалении: {exc}") from exc
+            raise _translate_sql_error("удалении", exc) from exc
 
     def delete_by_id(self, entity_class: type[TEntity], id: int) -> None:
         """Delete an entity by primary key, including its business hooks."""

@@ -6,7 +6,10 @@ import datetime
 from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from .entity import Entity
+from .fields import DateField, DateTimeField
 
 if TYPE_CHECKING:
     from .orm import Database
@@ -30,26 +33,49 @@ def check_sequence(
     date_field: str = "date",
 ) -> None:
     """Проверить, что документ проводится в хронологическом порядке."""
+    from .orm import _translate_sql_error
+
+    db._check_ready()
     doc_cls = type(doc)
     doc_date = getattr(doc, date_field, None)
     if doc_date is None:
         return
     doc_dt = _to_comparable_dt(doc_date)
 
-    posted: list[tuple[int | None, datetime.datetime]] = []
-    for other in db.list(doc_cls):
-        if other._id == doc._id:
-            continue
-        other_date = getattr(other, date_field, None)
-        if other_date and getattr(other, "posted", False):
-            posted.append((other._id, _to_comparable_dt(other_date)))
-    posted.sort(key=lambda x: x[1])
-    for oid, od in posted:
-        if od > doc_dt:
-            raise SequenceViolationError(
-                f"Документ #{oid} от {od:%d.%m.%Y %H:%M} уже проведён позже текущей даты ({doc_dt:%d.%m.%Y %H:%M}). "
-                "Проведение невозможно до исправления последовательности."
+    model_class = db._get_entity_model(doc_cls)
+    if model_class is None:
+        raise RuntimeError(f"Модель для {doc_cls.__name__} не создана")
+    if not hasattr(model_class, date_field) or not hasattr(model_class, "posted"):
+        return
+
+    fdef = doc_cls._meta.fields.get(date_field)
+    threshold: datetime.date | datetime.datetime = (
+        doc_dt.date()
+        if isinstance(fdef, DateField) and not isinstance(fdef, DateTimeField)
+        else doc_dt
+    )
+    date_col = getattr(model_class, date_field)
+
+    try:
+        with db.session() as sess:
+            query = sess.query(model_class.id, date_col).filter(
+                model_class.posted.is_(True),
+                date_col.is_not(None),
+                date_col > threshold,
             )
+            if doc._id is not None:
+                query = query.filter(model_class.id != doc._id)
+            conflict = query.order_by(date_col.asc(), model_class.id.asc()).first()
+    except SQLAlchemyError as exc:
+        raise _translate_sql_error("проверке последовательности", exc) from exc
+
+    if conflict is not None:
+        oid, raw_od = conflict
+        od = _to_comparable_dt(raw_od)
+        raise SequenceViolationError(
+            f"Документ #{oid} от {od:%d.%m.%Y %H:%M} уже проведён позже текущей даты ({doc_dt:%d.%m.%Y %H:%M}). "
+            "Проведение невозможно до исправления последовательности."
+        )
 
 
 # ── Версионирование ────────────────────────────────────────────────

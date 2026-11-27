@@ -305,6 +305,51 @@ class Metadata:
         self.table_name: str = ""
         self.defaults = defaults or {}
         self.section = section or ""
+        self.choice_refs: dict[str, RefField] = {}
+
+    def prepare_choice_filters(self) -> None:
+        """Validate header mappings and order editors after their dependencies."""
+        for part in self.table_parts.values():
+            for name, field in part.fields.items():
+                if isinstance(field, RefField) and field.choice_filter:
+                    raise ValueError(
+                        f"{self.name}.{part.name}.{name}: choice_filter доступен только в шапке карточки."
+                    )
+
+        ordered: dict[str, RefField] = {}
+        visiting: set[str] = set()
+
+        def visit(name: str, field: RefField) -> None:
+            path = f"{self.name}.{name}"
+            if name in visiting:
+                raise ValueError(f"{path}: цикл зависимостей choice_filter.")
+            if name in ordered:
+                return
+            visiting.add(name)
+            target = field.resolve_target()
+            for target_name, source_name in field.choice_filter.items():
+                if not isinstance(target_name, str) or not isinstance(source_name, str):
+                    raise ValueError(f"{path}: choice_filter сопоставляет имена полей.")
+                source = self.fields.get(source_name)
+                destination = target._meta.fields.get(target_name)
+                if source is None:
+                    raise ValueError(f"{path}: неизвестное поле источника «{source_name}».")
+                if destination is None:
+                    raise ValueError(f"{path}: неизвестное поле отбора «{target.__name__}.{target_name}».")
+                if (source.field_type != destination.field_type
+                    or isinstance(source, RefField) != isinstance(destination, RefField)
+                    or (isinstance(source, RefField) and isinstance(destination, RefField)
+                        and source.resolve_target() is not destination.resolve_target())):
+                    raise ValueError(f"{path}: несовместимые поля «{source_name}» и «{target.__name__}.{target_name}».")
+                if isinstance(source, RefField) and source.choice_filter:
+                    visit(source_name, source)
+            visiting.remove(name)
+            ordered[name] = field
+
+        for name, field in self.fields.items():
+            if isinstance(field, RefField) and field.choice_filter:
+                visit(name, field)
+        self.choice_refs = ordered
 
     @property
     def is_catalog(self) -> bool:
@@ -452,6 +497,7 @@ class Entity(metaclass=EntityMeta):
     _id: int | None
     _data: dict[str, Any]
     _table_data: dict[str, Any]
+    _table_parts_loaded: bool = True
 
     # Class-level metadata annotations for IDE autocompletion
     __verbose_name__: ClassVar[str | None] = None
@@ -662,9 +708,9 @@ class Entity(metaclass=EntityMeta):
         return db.get(cls, id)
 
     @classmethod
-    def all(cls: type[TEntity], db: Database) -> list[TEntity]:
-        """Fetch all entity instances."""
-        return db.list(cls)
+    def all(cls: type[TEntity], db: Database, *, include_table_parts: bool = False) -> list[TEntity]:
+        """Fetch all visible entities, optionally including table part rows."""
+        return db.list(cls, include_table_parts=include_table_parts)
 
     @classmethod
     def filter(cls: type[TEntity], db: Database, **kwargs: Any) -> list[TEntity]:

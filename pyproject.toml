@@ -1,6 +1,10 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "decui"
-version = "0.2.0"
+version = "0.3.0"
 description = "Declarative desktop ERP & business application framework for Python"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -14,4 +18,14 @@ dependencies = [
 
 [project.scripts]
 decui = "decui.cli:main"
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+include = ["decui", "decui.*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+decui = ["py.typed", "docs/*.md"]
 

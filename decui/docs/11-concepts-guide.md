@@ -31,7 +31,7 @@ DECUI поддерживает как общепринятую инженерн�
 | **Balance Ledger** | Регистр накопления | `@ledger`, `@balance_ledger`, `@accumulation` | Журнал изменений количественных/денежных остатков (склад, взаиморасчеты) |
 | **Value History / Store** | Регистр сведений | `@history_register`, `@value_history`, `@information` | Хранилище периодических данных (курсы валют на дату, оклады, цены) |
 | **Ledger Entry / Movement** | Движение | `LedgerEntry`, `Movement` | Единичная запись изменения баланса (приход `+`, расход `-`) |
-| **Posting / Approval** | Проведение | `doc.post()`, `doc.submit()`, `doc.is_posted` | Перевод черновика документа в статус учтённого с фиксацией движений |
+| **Posting / Approval** | Проведение | `db.post(doc)`, `db.unpost(doc)`, `doc.is_posted` | Перевод черновика документа в статус учтённого с фиксацией движений |
 | **Dimension** | Измерение | `Dimension`, `RefDimension` | Аналитический разрез учета (в разрезе какого Склада, Товара, Валюты) |
 | **Metric / Resource** | Ресурс | `Metric`, `Resource` | Числовой показатель, который суммируется (Количество, Сумма) |
 | **Subsystem / Modules** | Подсистема | `__subsystem__`, `__section__`, `__category__` | Дерево навигации в левой панели приложения |
@@ -96,7 +96,7 @@ class Invoice(Transaction):
     @action("Рассчитать")
     def calculate(self):
         total = 0
-        for row in self._table_data.get("Items", []):
+        for row in self.Items:
             qty = row.get("quantity", 1)
             prc = row.get("price", 0)
             row["amount"] = qty * prc
@@ -140,7 +140,7 @@ class GoodsReceipt(Transaction):
                 resources={"quantity": row["quantity"]},
                 is_income=True,
             )
-            for row in self._table_data.get("Items", [])
+            for row in self.Items
         ]
 ```
 
@@ -208,9 +208,13 @@ class SalesSummary(QueryReport):
 
 ## 4. Сборка готового приложения в .exe
 
-Для распространения приложения пользователям не нужен установленный Python:
+В каталоге приложения с активным окружением DECUI выполните сборку для
+целевой платформы.
+
 ```bash
-python build_exe.py
-# Результат: dist/ERP (или dist/ERP.exe на Windows)
+decui build app.py
 ```
-PyInstaller упаковывает Qt, SQLite и логику в единый автономный файл.
+
+PyInstaller упакует Qt, SQLite и логику приложения в `dist/app.exe` на
+Windows или `dist/app` на Linux. Пользователям не нужно устанавливать
+Python. См. [сборку и обновление базы](07-building.md).

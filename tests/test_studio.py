@@ -50,7 +50,7 @@ def test_studio_project_can_roundtrip_export_and_check(tmp_path):
         check=False, timeout=15,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "2 entities, 2 reports" in result.stdout
+    assert "сущностей — 2, отчётов — 2" in result.stdout
 
 
 def test_studio_rejects_unresolved_references_and_duplicate_fields():
@@ -1477,3 +1477,118 @@ def test_preview_shows_command_traceback_while_process_is_running():
         window.saved = repr(window.project)
         window.close()
         app.processEvents()
+
+
+def test_studio_dependent_ref_editor_roundtrip_export_and_validation(tmp_path):
+    import json
+
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication, QDialogButtonBox, QLineEdit
+
+    from decui.studio import StudioWindow
+    from decui.studio_project import StudioEntity
+
+    app = QApplication.instance() or QApplication([])
+    window = StudioWindow()
+    window.project = StudioProject(entities=[
+        StudioEntity("Buyer", "Покупатели", fields=[StudioField("name", "Имя")]),
+        StudioEntity("Address", "Адреса", fields=[
+            StudioField("owner", "Владелец", "Ref", target="Buyer"),
+        ]),
+        StudioEntity("Order", "Заказы", kind="Документ", fields=[
+            StudioField("buyer", "Покупатель", "Ref", target="Buyer"),
+            StudioField("address", "Доставка", "Ref", target="Address"),
+        ]),
+    ])
+    window._load_project()
+    window.entities.setCurrentRow(2)
+    legacy_path = tmp_path / "previous.decui.json"
+    window.project.write(legacy_path)
+    raw = json.loads(legacy_path.read_text(encoding="utf-8"))
+    for entity in raw["entities"]:
+        for field in entity["fields"]:
+            field.pop("choice_filter")
+    legacy_path.write_text(json.dumps(raw), encoding="utf-8")
+    assert StudioProject.read(legacy_path) == window.project
+
+    def fill_filter():
+        dialog = app.activeModalWidget()
+        dialog.findChild(QLineEdit, "field_choice_filter").setText("owner=buyer")
+        dialog.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Save).click()
+
+    QTimer.singleShot(0, fill_filter)
+    window._field_dialog(1)
+    project = window.project
+    assert project.entities[2].fields[1].choice_filter == {"owner": "buyer"}
+    address, order = project.entities[1:]
+    address.fields[0].name = "customer"
+    project.rename_field_references(address, "", "owner", "customer")
+    order.fields[0].name = "client"
+    project.rename_field_references(order, "", "buyer", "client")
+    assert order.fields[1].choice_filter == {"customer": "client"}
+
+    path = tmp_path / "delivery.decui.json"
+    project.write(path)
+    restored = StudioProject.read(path)
+    assert restored == project
+    entry = restored.export(tmp_path / "export")
+    assert "choice_filter={'customer': 'client'}" in entry.read_text(encoding="utf-8")
+
+    def check(entry):
+        return subprocess.run(
+            [sys.executable, "-m", "decui.cli", "check", str(entry)],
+            capture_output=True, text=True, check=False, timeout=15,
+        )
+
+    result = check(entry)
+    assert result.returncode == 0, result.stdout + result.stderr
+    restored.entities[2].fields[1].choice_filter = {"customer": "missing"}
+    invalid = check(restored.export(tmp_path / "invalid"))
+    assert invalid.returncode == 1
+    assert "Order.address: неизвестное поле источника «missing»" in invalid.stdout
+
+    window.saved = repr(window.project)
+    window.close()
+
+
+def test_studio_choice_filter_validation_returns_focus(monkeypatch):
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication, QDialogButtonBox, QLineEdit, QMessageBox
+
+    from decui.studio import StudioWindow
+    from decui.studio_project import StudioEntity, StudioField, StudioProject
+
+    app = QApplication.instance() or QApplication([])
+    window = StudioWindow()
+    window.project = StudioProject(entities=[
+        StudioEntity("Buyer", "Покупатели", fields=[StudioField("name", "Имя")]),
+        StudioEntity("Address", "Адреса", fields=[StudioField("owner", "Владелец", "Ref", target="Buyer")]),
+        StudioEntity("Order", "Заказы", kind="Документ", fields=[
+            StudioField("buyer", "Покупатель", "Ref", target="Buyer"),
+            StudioField("address", "Доставка", "Ref", target="Address"),
+        ]),
+    ])
+    window._load_project()
+    window.entities.setCurrentRow(2)
+    warnings = []
+    focused = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *_a: warnings.append(_a[-1]))
+
+    def submit_invalid():
+        dialog = app.activeModalWidget()
+        try:
+            choice_edit = dialog.findChild(QLineEdit, "field_choice_filter")
+            choice_edit.setText("bad syntax")
+            dialog.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Save).click()
+            app.processEvents()
+            focused.append(choice_edit.hasFocus())
+        finally:
+            dialog.reject()
+
+    QTimer.singleShot(0, submit_invalid)
+    window._field_dialog(1)
+    assert len(warnings) == 1
+    assert "Укажите уникальные пары полей" in warnings[0]
+    assert focused == [True]
+    window.saved = repr(window.project)
+    window.close()
