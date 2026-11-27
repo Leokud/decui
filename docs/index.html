@@ -250,6 +250,7 @@
 
     .step-section {
       display: none;
+      scroll-margin-top: var(--header-height);
       animation: fadeIn 0.25s ease;
     }
 
@@ -647,12 +648,13 @@
   <header>
     <div style="display: flex; align-items: center; gap: 12px;">
       <button class="mobile-menu-btn" onclick="toggleSidebar()">☰ Меню</button>
-      <a href="#" class="brand" onclick="goToStep(0)">
+      <a href="#step-0" class="brand">
         <span>📦 DECUI</span>
         <span class="brand-badge">Tutorial v0.2.0</span>
       </a>
     </div>
     <div class="header-actions">
+      <a href="#step-10" class="btn-link">📘 Полный гайд</a>
       <a href="https://github.com/Leokud/decui" target="_blank" class="btn-link">
         <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor">
           <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
@@ -682,45 +684,49 @@
       </div>
 
       <nav class="nav-list">
-        <a class="nav-item" href="#step-0" onclick="goToStep(0)">
+        <a class="nav-item" href="#step-0">
           <div class="nav-step-badge">0</div>
           <span>Введение и концепции</span>
         </a>
-        <a class="nav-item active" href="#step-1" onclick="goToStep(1)">
+        <a class="nav-item active" href="#step-1">
           <div class="nav-step-badge">1</div>
-          <span>Приложение за 20 минут</span>
+          <span>Первое приложение</span>
         </a>
-        <a class="nav-item" onclick="goToStep(2)">
+        <a class="nav-item" href="#step-2">
           <div class="nav-step-badge">2</div>
           <span>Справочники и поля</span>
         </a>
-        <a class="nav-item" onclick="goToStep(3)">
+        <a class="nav-item" href="#step-3">
           <div class="nav-step-badge">3</div>
           <span>Документы и строки</span>
         </a>
-        <a class="nav-item" onclick="goToStep(4)">
+        <a class="nav-item" href="#step-4">
           <div class="nav-step-badge">4</div>
           <span>Складской учёт и остатки</span>
         </a>
-        <a class="nav-item" onclick="goToStep(5)">
+        <a class="nav-item" href="#step-5">
           <div class="nav-step-badge">5</div>
           <span>Периодические значения</span>
         </a>
-        <a class="nav-item" onclick="goToStep(6)">
+        <a class="nav-item" href="#step-6">
           <div class="nav-step-badge">6</div>
           <span>Отчёты и диаграммы</span>
         </a>
-        <a class="nav-item" onclick="goToStep(7)">
+        <a class="nav-item" href="#step-7">
           <div class="nav-step-badge">7</div>
           <span>Сборка в автономный .exe</span>
         </a>
-        <a class="nav-item" onclick="goToStep(8)">
+        <a class="nav-item" href="#step-8">
           <div class="nav-step-badge">8</div>
           <span>CLI и эргономика (DX)</span>
         </a>
-        <a class="nav-item" onclick="goToStep(9)">
+        <a class="nav-item" href="#step-9">
           <div class="nav-step-badge">9</div>
           <span>Полный справочник API</span>
+        </a>
+        <a class="nav-item" href="#step-10">
+          <div class="nav-step-badge">10</div>
+          <span>Полный гайд и права</span>
         </a>
       </nav>
 
@@ -836,23 +842,77 @@
 
       <!-- STEP 1 -->
       <section class="step-section active" id="step-1">
-        <h1>Первое приложение за 20 минут</h1>
-        <p>Соберём настольное приложение для целей и задач. Достаточно знать Python. DECUI сам создаст окна, списки и локальное хранилище.</p>
+        <h1>Первое приложение</h1>
+        <p>Создайте справочник товаров, сохраните запись и добавьте поле в Python.
+          DECUI создаст карточку, список и таблицу SQLite из одного класса.</p>
 
-        <h2>1. Установите DECUI · 3 минуты</h2>
-        <p>Из корня репозитория в окружении Python 3.12 или новее выполните команду. Установятся и зависимости фреймворка.</p>
+        <h2>1. Создайте проект и запустите его</h2>
+        <p>Из корня репозитория DECUI выполните команды ниже. Нужны Python 3.12+ и uv.
+          Команды одинаковы в Bash и PowerShell.</p>
+        <div class="code-container" id="basic-quickstart">
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+          <pre><code class="language-bash">uv sync --locked --inexact
+uv run --locked decui new warehouse --template basic
+cd warehouse
+uv run --locked decui run</code></pre>
+        </div>
+        <p>В списке «Товары» нажмите «Новый», введите «Чай» и цену 125,50, затем
+          сохраните карточку. Закройте окно и повторите последнюю команду.
+          Товар останется в списке. База хранится в <code>warehouse/data.sqlite3</code>.</p>
+        <p>Нажмите <kbd>Ctrl+F</kbd>, введите «Чай» и нажмите <kbd>Enter</kbd>, чтобы перейти к результатам.
+          Ещё одно нажатие <kbd>Enter</kbd> откроет выбранную карточку.
+          Если условия слишком узкие, кнопка «Сбросить» очистит поиск и отбор.</p>
+        <p>В карточке <kbd>Ctrl+S</kbd> (<kbd>⌘S</kbd> на macOS) сохраняет правки и оставляет карточку открытой.
+          При попытке закрыть карточку с несохранёнными правками DECUI предложит сохранить их,
+          выйти без сохранения или продолжить редактирование.</p>
+
+        <h2>2. Добавьте поле в app.py</h2>
+        <p>Декоратор <code>@master_data</code> регистрирует справочник.
+          <code>String</code> задаёт текстовое поле, а <code>Decimal</code> задаёт поле для цены.
+          Аргумент <code>start=Product</code> открывает список товаров при запуске.</p>
+        <details>
+          <summary>Содержимое сгенерированного app.py</summary>
+          <div class="code-container" id="basic-app-example">
+            <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+            <pre><code class="language-python">from decui import Decimal, ERPApplication, MasterData, String, master_data
+
+
+@master_data
+class Product(MasterData):
+    __verbose_name__ = &quot;Товары&quot;
+    __section__ = &quot;Склад&quot;
+
+    name = String(&quot;Наименование&quot;, required=True)
+    price = Decimal(&quot;Цена&quot;, scale=2, min_value=0)
+
+
+if __name__ == &quot;__main__&quot;:
+    app = ERPApplication(title=&quot;Учёт товаров&quot;, db_path=&quot;data.sqlite3&quot;, start=Product)
+    raise SystemExit(app.run())</code></pre>
+          </div>
+        </details>
+        <p>В <code>warehouse/app.py</code> импортируйте <code>Integer</code> из
+          <code>decui</code> и добавьте в класс <code>Product</code> строку
+          <code>priority = Integer("Приоритет", default=3)</code>. Перезапустите
+          приложение и откройте «Чай». Прежние название и цена сохранятся. Задайте
+          приоритет 5 и сохраните. У нового товара начальный приоритет равен 3.</p>
+
+        <h2>3. Проверьте проект в терминале</h2>
+        <p>Закройте окно и выполните команды из папки <code>warehouse</code>.
+          Первая проверит схему. Вторая запустит тест из <code>test_app.py</code>.
+          Тест сохраняет и читает товар в отдельной базе в памяти.</p>
         <div class="code-container">
           <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
-          <pre><code class="language-bash">python -m pip install -e .</code></pre>
+          <pre><code class="language-bash">uv run --locked decui check
+uv run --locked decui test -q</code></pre>
         </div>
 
-        <p>Визуальный редактор открывается командой <code>decui studio</code>.
-          Нажмите «Шаблоны → Цели и задачи», чтобы посмотреть связи, изменить поля,
-          добавить отчёт и запустить предпросмотр. Экспорт создаёт обычный
-          <code>app.py</code>, который можно открыть в редакторе Python.</p>
-
-        <h2>2. Запустите «Мои цели» · 5 минут</h2>
-        <p>Скопируйте весь блок в <code>app.py</code> и выполните <code>python app.py</code>.</p>
+        <details>
+          <summary>Дополнительный проект «Мои цели» со связями и отчётом</summary>
+          <p>Вернитесь в корень репозитория. Создайте папку <code>my_goals</code>
+            командой <code>mkdir my_goals</code> и перейдите в неё.</p>
+        <h3>Запустите «Мои цели»</h3>
+        <p>Скопируйте весь блок в <code>app.py</code> и выполните <code>uv run --locked decui run</code>.</p>
         <div class="code-container">
           <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
           <pre><code class="language-python">from datetime import datetime, timedelta
@@ -913,7 +973,7 @@ if __name__ == &quot;__main__&quot;:
         </div>
         <p><code>app_id</code> задаёт постоянный каталог приложения в данных пользователя. Оставляйте его прежним, чтобы после перезапуска открывались те же записи. <code>start=Goal</code> открывает список целей сразу.</p>
 
-        <h2>3. Проверьте сценарий · 5 минут</h2>
+        <h3>Проверьте сценарий</h3>
         <ol>
           <li>В списке «Цели» нажмите «Новый», введите название и сохраните карточку.</li>
           <li>В разделе «Задачи цели» нажмите «Новый». Поле «Цель» заполнится автоматически. Укажите название и срок.</li>
@@ -922,8 +982,17 @@ if __name__ == &quot;__main__&quot;:
           <li>Создайте задачу со сроком через 30 минут и подождите до следующей проверки напоминаний. Закройте и запустите приложение снова, чтобы проверить сохранение записей.</li>
         </ol>
 
-        <h2>4. Добавьте своё правило · 7 минут</h2>
-        <p>Добавьте задаче поле <code>priority: Integer = Integer("Приоритет", default=1, min_value=1, max_value=3)</code> и импортируйте <code>Integer</code>. Перезапустите приложение и найдите поле в карточке и списке. Замените порядок отчёта на <code>order_by="-priority"</code>, чтобы сначала показывать важные задачи.</p>
+        <h3>Добавьте своё правило</h3>
+        <p>Сохраните цель и связанную задачу, затем сделайте резервную копию.
+          Импортируйте <code>Integer</code> и добавьте в <code>Task</code> поле
+          <code>priority = Integer("Приоритет", default=1, min_value=1, max_value=3)</code>.
+          Оставьте <code>app_id="my-goals"</code> и перезапустите приложение.
+          <code>AutoForm</code> вызывает <code>create_editor()</code> для числового редактора,
+          а <code>ListView</code> берёт заголовок колонки из тех же метаданных.
+          Проверьте из Python: сразу после обновления <code>db.get(Task, task_id).priority</code>
+          возвращает <code>None</code>, а <code>Task().priority</code> возвращает <code>1</code>.
+          ID и ссылка на цель сохраняются. Откройте старую карточку, явно установите
+          приоритет и сохраните. При новом чтении вернётся записанное число.</p>
         <ul>
           <li><code>Catalog</code> даёт список и карточку. Дескрипторы <code>String</code>, <code>DateTime</code> и <code>Boolean</code> задают типы данных и редакторы.</li>
           <li><code>Ref(..., related_list="Задачи цели")</code> добавляет в карточку связанный список. С <code>on_delete="CASCADE"</code> удаление цели удалит и её задачи.</li>
@@ -931,13 +1000,14 @@ if __name__ == &quot;__main__&quot;:
           <li><code>ERPApplication(..., first_run=seed)</code> один раз вызывает функцию <code>seed(db)</code> для начальных данных. Если функция завершится ошибкой, её изменения откатятся.</li>
         </ul>
 
-        <h2>Как развить пример до «Цель. Код будущего»</h2>
+        <h3>Как развить пример до «Цель. Код будущего»</h3>
         <ul>
           <li><b>Последовательность этапов.</b> В <code>before_save</code> прочитайте задачи цели через <code>db.filter</code>, сравните срок с соседними этапами и проверьте, что предыдущие выполнены.</li>
           <li><b>Прогресс и статус.</b> Считайте долю выполненных этапов после записи и удаления задачи в <code>after_save</code> и <code>after_delete</code>. Сохраните результат в поле цели с <code>read_only=True</code>. Изменения задачи и цели войдут в одну транзакцию.</li>
           <li><b>Отчёт по целям.</b> Используйте <code>RefParam</code> для отбора. В <code>execute</code> верните строку с <code>_style="group"</code> для каждой цели, затем строки её этапов со стилями <code>completed</code>, <code>current</code> и <code>future</code>. Чтобы порядок групп сохранялся, задайте <code>sortable=False</code>.</li>
         </ul>
-        <p>Полный код этих правил и начальные данные есть в <a href="https://github.com/Leokud/decui/blob/master/examples/future_goals.py">примере «Цель. Код будущего»</a>. Из локального репозитория он запускается командой <code>python -m examples.future_goals</code>.</p>
+        <p>Полный код этих правил и начальные данные есть в <a href="https://github.com/Leokud/decui/blob/master/examples/future_goals.py">примере «Цель. Код будущего»</a>. Из локального репозитория он запускается командой <code>uv run --locked python -m examples.future_goals</code>.</p>
+        </details>
 
         <div class="step-footer">
           <button class="btn btn-secondary" onclick="goToStep(0)">Как устроен DECUI</button>
@@ -1056,6 +1126,26 @@ class Product(MasterData):
           Фреймворк превратит это поле в выпадающий список (комбобокс), подгрузит доступные категории из базы данных и будет показывать значение поля <code>title</code> вместо непонятного числового ID.
         </div>
 
+        <h2 id="dependent-ref">Три настройки ссылки</h2>
+        <div class="code-container">
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+          <pre><code class="language-python"># Address.owner добавляет список адресов в карточку покупателя.
+owner = Ref(Customer, "Покупатель", related_list="Адреса покупателя")
+
+# Order.address предлагает адреса выбранного покупателя.
+customer = Ref(Customer, "Покупатель")
+address = Ref(Address, "Адрес доставки", choice_filter={"owner": "customer"})
+
+# Копирование значения Customer.phone в одноимённое поле Order.
+customer = Ref(Customer, "Покупатель", auto_fill="phone")</code></pre>
+        </div>
+        <p>Отбор использует текущие значения редакторов, даже в новом заказе.
+          Условия объединяются через AND. Пустой или недоступный источник
+          оставляет только пустой вариант. Чтобы принадлежность проверялась и
+          при записи из Python, добавьте правило в <code>before_save(db)</code>.
+          В Studio у ссылки шапки укажите <code>owner=customer</code> в настройке
+          «Отбор вариантов ссылки».</p>
+
         <div class="step-footer">
           <button class="btn btn-secondary" onclick="goToStep(1)">⬅ Назад</button>
           <button class="btn btn-primary" onclick="markCompletedAndNext(2)">Далее: Документы и спецификации ➔</button>
@@ -1095,13 +1185,15 @@ class SaleOrder(Transaction):
     # Кнопка действия на форме заказа
     @action("Рассчитать сумму")
     def calculate_total(self):
-        tot = Decimal("0.00")
-        for row in self._table_data.get("Items", []):
-            qty = Decimal(str(row.get("quantity", 1)))
-            prc = Decimal(str(row.get("price", 0)))
+        for row in self.Items:
+            qty = Decimal(str(row.get("quantity") or 0))
+            prc = Decimal(str(row.get("price") or 0))
             row["amount"] = qty * prc
-            tot += row["amount"]
-        self.total = tot
+        self.total = self.Items.total("amount")
+
+# product — сохранённый товар; order — новый документ.
+order = SaleOrder(customer="Клиент")
+order.Items.add(product=product.id, quantity=2, price=Decimal("12.50"))
 </code></pre>
         </div>
 
@@ -1193,7 +1285,7 @@ class SaleOrder(Transaction):
     # Метод формирования движений при проведении
     def get_ledger_entries(self):
         entries = []
-        for row in self._table_data.get("Items", []):
+        for row in self.Items:
             entries.append(LedgerEntry(
                 register=StockLedger,
                 dimensions={"warehouse": "Основной", "product": row["product"]},
@@ -1229,30 +1321,53 @@ for s in stocks:
         <h1>Периодические значения (@history_register)</h1>
         <p>Часто требуется хранить величины, меняющиеся во времени: курсы валют на дату, историю цен поставщиков, тарифы сотрудников.</p>
 
-        <h2>Регистр сведений: Курсы валют</h2>
-        <div class="code-container">
+        <h2>Цена товара у поставщика на дату заказа</h2>
+        <p>Ниже фрагменты приложения закупок. <a href="#step-6">Полный запускаемый файл</a>
+          можно скопировать в шаге об отчётах.</p>
+        <p>В упражнении «Учёт товаров» из README цена зависит от двух ссылок.
+          После сверки двух демозаказов в следующем шаге откройте карточку поставщика «Север»
+          и нажмите «Новый» в списке «Заказы поставщику». DECUI подставит поставщика в новый
+          заказ. Добавьте строку с тем же товаром на декабрь и сохраните. Цена единицы составит
+          15,00. После перезапуска заказ появится в списке этого поставщика.</p>
+        <div class="code-container" id="purchase-prices">
           <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
-          <pre><code class="language-python">from decimal import Decimal
-from decui import history_register, HistoryRegister, Dimension, Resource, set_record, get_latest, get_records
-
-@history_register
-class CurrencyRate(HistoryRegister):
-    currency = Dimension("Валюта")
-    rate     = Resource("Курс к рублю", field_type=Decimal)
-
-# Добавление курсов:
-set_record(db, CurrencyRate, dimensions={"currency": "USD"}, resources={"rate": Decimal("92.50")})
-set_record(db, CurrencyRate, dimensions={"currency": "EUR"}, resources={"rate": Decimal("100.20")})
-
-# Получение самого последнего курса валюты (срез последних):
-usd = get_latest(db, CurrencyRate, currency="USD")
-print(f"Текущий курс доллара: {usd['rate']}")
-
-# Получение всей истории изменений:
-history = get_records(db, CurrencyRate, currency="USD", order_by="id", desc=True)
-</code></pre>
+          <pre><code class="language-python">@history_register
+class Prices:
+    product = RefDimension(Product, &quot;Товар&quot;)
+    supplier = RefDimension(Supplier, &quot;Поставщик&quot;)
+    price = Resource(&quot;Цена&quot;)</code></pre>
         </div>
+        <p>В <code>before_save(db)</code> проверяем цены всех строк и только затем меняем суммы.
+          Поле <code>unit_price</code> показывает цену на дату заказа после сохранения.
+          Для текущей цены товара DECUI использует соглашение об имени колонки <code>price</code>.
+          Ноль считается допустимой ценой. Округление и проверка относятся к этому приложению.
+          Прямой <code>db.save(order)</code> также вызывает <code>before_save</code>.
+          Передайте <code>validate=True</code> для вызова <code>on_validate()</code>, как в форме.</p>
+        <div class="code-container" id="purchase-rule">
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+          <pre><code class="language-python">def before_save(self, db):
+        prices = []
+        for line, row in enumerate(self.Items, start=1):
+            record = get_latest(
+                db, Prices, on_date=self.date,
+                product=row[&quot;product&quot;], supplier=self.supplier,
+            )
+            if record is None or record[&quot;price&quot;] is None or record[&quot;price&quot;] &lt; 0:
+                product = db.get(Product, row[&quot;product&quot;])
+                name = product.name if product is not None else f&quot;ID {row[&#x27;product&#x27;]}&quot;
+                raise ValueError(
+                    f&quot;Строка {line}, товар «{name}», {self.date:%d.%m.%Y}: &quot;
+                    &quot;нет допустимой цены поставщика.&quot;
+                )
+            prices.append(record[&quot;price&quot;])
 
+        for row, price in zip(self.Items, prices, strict=True):
+            row[&quot;unit_price&quot;] = price
+            row[&quot;amount&quot;] = (row[&quot;quantity&quot;] * price).quantize(
+                Decimal(&quot;0.01&quot;), rounding=ROUND_HALF_UP
+            )
+        self.total = self.Items.total(&quot;amount&quot;)</code></pre>
+        </div>
         <div class="step-footer">
           <button class="btn btn-secondary" onclick="goToStep(4)">⬅ Назад</button>
           <button class="btn btn-primary" onclick="markCompletedAndNext(5)">Далее: Отчёты и диаграммы ➔</button>
@@ -1265,6 +1380,11 @@ history = get_records(db, CurrencyRate, currency="USD", order_by="id", desc=True
         <h1>Аналитические отчёты и диаграммы (@report)</h1>
         <p>DECUI строит параметрические отчеты: вы объявляете колонки таблицы, параметры формы фильтрации и метод выборки данных.</p>
 
+        <p>После изменения фильтров нажмите «Сформировать» или <kbd>F5</kbd>.
+          До обновления DECUI показывает прежний результат с сообщением «Параметры изменены»
+          и отключает экспорт CSV. Если выборка пуста, появится сообщение
+          «Нет данных по применённым параметрам».</p>
+
         <p>Кнопка «Колонки» позволяет выбрать, что показывать в таблице и выгружать в CSV.
           Чтобы изменить порядок, перетащите строки в списке колонок или используйте «Выше» и «Ниже».
           Колонки, по которым сгруппирован отчёт, остаются видимыми.
@@ -1275,45 +1395,220 @@ history = get_records(db, CurrencyRate, currency="USD", order_by="id", desc=True
           Чтобы сохранить фильтры, колонки, группировки, итоги и сортировку, выберите «Управление → Сохранить текущие настройки».
           При следующем открытии выберите вариант и нажмите «Сформировать».
           Варианты хранятся в базе приложения отдельно для каждой учётной записи.</p>
-        <h2>Отчет по продажам с агрегацией сумм</h2>
-        <div class="code-container">
+        <h2>Закупки по строкам за период</h2>
+        <p><code>date__date_range=(date_from, date_to)</code> отбирает заказы в базе
+          и включает оба граничных дня целиком. С <code>include_table_parts=True</code>
+          строки выбранных заказов загружаются пакетно.</p>
+        <div class="code-container" id="purchase-report">
           <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
-          <pre><code class="language-python">from datetime import date
-from decui import report, QueryReport, Column, DateParam, StringParam
-
-@report
-class SalesReport(QueryReport):
-    title = "Сводка продаж за период"
-    
-    # Колонки таблицы с автоматическим суммированием итога
+          <pre><code class="language-python">@report
+class PurchaseReport(Report):
+    title = &quot;Закупки по строкам&quot;
+    auto_run = True
+    supplier = RefParam(&quot;Поставщик&quot;, Supplier, from_record=True)
+    date_from = DateParam(&quot;С&quot;, default=date(2026, 11, 1))
+    date_to = DateParam(&quot;По&quot;, default=date(2026, 11, 30))
     columns = [
-        Column("Дата", "date", width=120),
-        Column("Клиент", "customer", width=200),
-        Column("Сумма", "total", width=140, align="right", aggregate="sum", suffix=" руб."),
+        Column(&quot;Заказ&quot;, &quot;number&quot;),
+        Column(&quot;Товар&quot;, &quot;product&quot;),
+        Column(&quot;Сумма&quot;, &quot;amount&quot;, aggregate=&quot;sum&quot;, format=&quot;{:,.2f}&quot;),
     ]
 
-    # Параметры фильтрации на форме
-    date_from = DateParam("Дата с", required=True, default=date.today)
-    date_to   = DateParam("Дата по", required=True, default=date.today)
-    customer  = StringParam("Фильтр по клиенту")
-
-    def execute(self, db, date_from, date_to, customer=None, **kwargs):
-        orders = db.list(SaleOrder)
-        results = []
-        for o in orders:
-            # Отбираем только проведенные документы
-            if not o.is_posted:
-                continue
-            if customer and customer.lower() not in (o.customer or "").lower():
-                continue
-            results.append({
-                "date": str(o.date.strftime("%d.%m.%Y")),
-                "customer": o.customer,
-                "total": str(o.total or 0),
-            })
-        return results
-</code></pre>
+    def execute(
+        self, db: Database, *, date_from: date, date_to: date, supplier: int | None = None,
+    ) -&gt; list[dict]:
+        rows = []
+        filters = {&quot;supplier&quot;: supplier} if supplier is not None else {}
+        orders = db.filter(
+            PurchaseOrder,
+            date__date_range=(date_from, date_to),
+            include_table_parts=True,
+            **filters,
+        )
+        products = {product.id: product.name for product in db.list(Product)}
+        for order in orders:
+            for item in order.Items:
+                rows.append(dict(
+                    number=order.number,
+                    product=products.get(item[&quot;product&quot;], &quot;&quot;),
+                    amount=item[&quot;amount&quot;],
+                    _entity_class=PurchaseOrder,
+                    _entity_id=order.id,
+                ))
+        return rows</code></pre>
         </div>
+        <h3>Сверьте два заказа</h3>
+        <p>В папке <code>warehouse</code> из первого шага сохраните полный код как
+          <code>purchase_orders.py</code> рядом с <code>app.py</code>. Выполните
+          <code>uv run --locked python purchase_orders.py --demo --db data.sqlite3</code>,
+          чтобы использовать сохранённый товар. В отчёте за 01–30.11.2026 останется
+          <code>DEMO-NOV</code> от 30 ноября в 23:59:59 с суммой 25,00 (2 × 12,50).
+          Цена 15,00 действует с декабря. Расширьте период до 01.01.2027,
+          чтобы увидеть также <code>DEMO-JAN</code> с нулевой ценой второго поставщика.
+          В октябре результат пуст. Дата начала позже конца вызывает сообщение об ошибке.</p>
+        <h3>Откройте отчёт из карточки</h3>
+        <p>В карточке поставщика «Север» выберите «Отчёты → Закупки по строкам».
+          <code>RefParam("Поставщик", Supplier, from_record=True)</code> добавляет этот пункт и
+          подставляет поставщика. С <code>auto_run = True</code> отчёт сразу формируется.
+          Расширьте период до 01.01.2027 и нажмите «Сформировать». Заказ поставщика «Юг»
+          появится после очистки фильтра «Поставщик» и повторного формирования.
+          Дважды нажмите на строку, чтобы открыть заказ.</p>
+        <details>
+          <summary>Полный запускаемый пример «Учёт товаров»</summary>
+        <div class="code-container" id="purchase-orders-example">
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+          <pre><code class="language-python">&quot;&quot;&quot;Учебный маршрут от карточки товара до отчёта по строкам.
+
+В каталоге учебного проекта запустите копию файла с --demo --db data.sqlite3.
+Из корня репозитория запустите python -m examples.features.purchase_orders --demo.
+&quot;&quot;&quot;
+
+import argparse
+from datetime import date, datetime
+from decimal import Decimal, ROUND_HALF_UP
+
+from decui import (
+    Column, Database, DateParam, Decimal as D, ERPApplication, Integer,
+    MasterData, Ref, RefDimension, RefParam, Report, Resource, String, Transaction,
+    get_latest, history_register, line_items, master_data, report, set_record, transaction,
+)
+
+
+@master_data
+class Product(MasterData):
+    __verbose_name__ = &quot;Товары&quot;
+    __section__ = &quot;Склад&quot;
+
+    name = String(&quot;Наименование&quot;, required=True)
+    price = D(&quot;Цена&quot;, precision=10, scale=2, min_value=0)
+    priority = Integer(&quot;Приоритет&quot;, default=3)
+
+
+@master_data
+class Supplier(MasterData):
+    __verbose_name__ = &quot;Поставщики&quot;
+    name = String(&quot;Наименование&quot;, required=True)
+
+
+@history_register
+class Prices:
+    product = RefDimension(Product, &quot;Товар&quot;)
+    supplier = RefDimension(Supplier, &quot;Поставщик&quot;)
+    price = Resource(&quot;Цена&quot;)
+
+
+@transaction
+class PurchaseOrder(Transaction):
+    __verbose_name__ = &quot;Заказы поставщикам&quot;
+    supplier = Ref(Supplier, &quot;Поставщик&quot;, required=True, related_list=&quot;Заказы поставщику&quot;)
+    total = D(&quot;Итого&quot;, scale=2, read_only=True)
+
+    @line_items
+    class Items:
+        product = Ref(Product, &quot;Товар&quot;, required=True)
+        quantity = Integer(&quot;Количество&quot;, min_value=1, default=1)
+        unit_price = D(&quot;Цена на дату заказа&quot;, scale=2, read_only=True)
+        amount = D(&quot;Сумма&quot;, scale=2, read_only=True)
+
+    def on_validate(self):
+        return [] if self.Items else [&quot;Добавьте хотя бы одну строку заказа.&quot;]
+
+    def before_save(self, db):
+        prices = []
+        for line, row in enumerate(self.Items, start=1):
+            record = get_latest(
+                db, Prices, on_date=self.date,
+                product=row[&quot;product&quot;], supplier=self.supplier,
+            )
+            if record is None or record[&quot;price&quot;] is None or record[&quot;price&quot;] &lt; 0:
+                product = db.get(Product, row[&quot;product&quot;])
+                name = product.name if product is not None else f&quot;ID {row[&#x27;product&#x27;]}&quot;
+                raise ValueError(
+                    f&quot;Строка {line}, товар «{name}», {self.date:%d.%m.%Y}: &quot;
+                    &quot;нет допустимой цены поставщика.&quot;
+                )
+            prices.append(record[&quot;price&quot;])
+
+        for row, price in zip(self.Items, prices, strict=True):
+            row[&quot;unit_price&quot;] = price
+            row[&quot;amount&quot;] = (row[&quot;quantity&quot;] * price).quantize(
+                Decimal(&quot;0.01&quot;), rounding=ROUND_HALF_UP
+            )
+        self.total = self.Items.total(&quot;amount&quot;)
+
+
+@report
+class PurchaseReport(Report):
+    title = &quot;Закупки по строкам&quot;
+    auto_run = True
+    supplier = RefParam(&quot;Поставщик&quot;, Supplier, from_record=True)
+    date_from = DateParam(&quot;С&quot;, default=date(2026, 11, 1))
+    date_to = DateParam(&quot;По&quot;, default=date(2026, 11, 30))
+    columns = [
+        Column(&quot;Заказ&quot;, &quot;number&quot;),
+        Column(&quot;Товар&quot;, &quot;product&quot;),
+        Column(&quot;Сумма&quot;, &quot;amount&quot;, aggregate=&quot;sum&quot;, format=&quot;{:,.2f}&quot;),
+    ]
+
+    def execute(
+        self, db: Database, *, date_from: date, date_to: date, supplier: int | None = None,
+    ) -&gt; list[dict]:
+        rows = []
+        filters = {&quot;supplier&quot;: supplier} if supplier is not None else {}
+        orders = db.filter(
+            PurchaseOrder,
+            date__date_range=(date_from, date_to),
+            include_table_parts=True,
+            **filters,
+        )
+        products = {product.id: product.name for product in db.list(Product)}
+        for order in orders:
+            for item in order.Items:
+                rows.append(dict(
+                    number=order.number,
+                    product=products.get(item[&quot;product&quot;], &quot;&quot;),
+                    amount=item[&quot;amount&quot;],
+                    _entity_class=PurchaseOrder,
+                    _entity_id=order.id,
+                ))
+        return rows
+
+
+def seed_demo(db: Database):
+    with db.transaction():
+        if db.filter(PurchaseOrder, number=&quot;DEMO-NOV&quot;):
+            return
+        products = db.list(Product)
+        product = products[0] if products else db.save(Product(name=&quot;Кофе&quot;, price=Decimal(&quot;99&quot;)))
+        north = db.save(Supplier(name=&quot;Север&quot;))
+        south = db.save(Supplier(name=&quot;Юг&quot;))
+        for supplier, day, price in (
+            (north, date(2026, 11, 1), &quot;12.50&quot;),
+            (north, date(2026, 12, 1), &quot;15.00&quot;),
+            (south, date(2026, 11, 1), &quot;0.00&quot;),
+        ):
+            set_record(db, Prices, dimensions={&quot;product&quot;: product.id, &quot;supplier&quot;: supplier.id},
+                       resources={&quot;price&quot;: Decimal(price)}, period=day)
+        for number, supplier, moment in (
+            (&quot;DEMO-NOV&quot;, north, datetime(2026, 11, 30, 23, 59, 59)),
+            (&quot;DEMO-JAN&quot;, south, datetime(2027, 1, 1)),
+        ):
+            order = PurchaseOrder(number=number, supplier=supplier.id, date=moment)
+            order.Items.add(product=product.id, quantity=2)
+            db.save(order, validate=True)
+
+
+if __name__ == &quot;__main__&quot;:
+    parser = argparse.ArgumentParser(description=&quot;Пример учёта товаров и закупок&quot;)
+    parser.add_argument(&quot;--demo&quot;, action=&quot;store_true&quot;, help=&quot;Добавить демонстрационные заказы&quot;)
+    parser.add_argument(&quot;--db&quot;, help=&quot;Путь к базе SQLite учебного проекта&quot;)
+    args = parser.parse_args()
+    app = ERPApplication(title=&quot;Учёт товаров&quot;, db_path=args.db, app_id=&quot;warehouse&quot;, start=Product)
+    if args.demo:
+        seed_demo(app.database)
+    raise SystemExit(app.run())</code></pre>
+        </div>
+        </details>
 
         <div class="callout tip">
           <div class="callout-title">🎨 Цветовая и визуальная индикация строк</div>
@@ -1345,26 +1640,39 @@ layout.addWidget(chart)</code></pre>
         <h1>Сборка в автономный .exe для распространения</h1>
         <p>Вашим пользователям не нужен установленный Python или терминал. PyInstaller упакует всё приложение в единый исполняемый файл.</p>
 
-        <h2>1. Скрипт сборщика (build_exe.py)</h2>
-        <p>В корень репозитория включен готовый настроенный скрипт сборки:</p>
+        <h2>1. Соберите своё приложение</h2>
+        <p>В каталоге учебного проекта выполните команду ниже.
+          Она одинакова в Bash и PowerShell. CLI передаст PyInstaller путь к DECUI.
+          Для Windows собирайте на Windows.</p>
         <div class="code-container">
           <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
-          <pre><code class="language-bash">python build_exe.py</code></pre>
+          <pre><code class="language-bash">uv run --locked decui build app.py</code></pre>
         </div>
+        <p>Исполняемый файл появится в <code>dist/app.exe</code> на Windows
+          или в <code>dist/app</code> на Linux.</p>
 
-        <h2>2. Что происходит во время сборки?</h2>
-        <ul>
-          <li>Автоматически очищаются временные файлы сборки и тестовые базы данных.</li>
-          <li>Подтягиваются все необходимые динамические библиотеки Qt (PySide6) и SQLAlchemy.</li>
-          <li>Включаются флаги <code>--onefile</code> (один бинарник) и <code>--windowed</code> (без черного окна консоли).</li>
-          <li>Результат помещается в папку <code>dist/ERP.exe</code> (на Windows) или <code>dist/ERP</code> (на Linux).</li>
-        </ul>
+        <h2>2. Соберите демо из репозитория</h2>
+        <p>Из корня репозитория выполните <code>uv run --locked python build_exe.py</code>.
+          Скрипт собирает <code>examples/simple.py</code> в <code>dist/ERP.exe</code>
+          на Windows или <code>dist/ERP</code> на Linux. При повторном запуске скрипт
+          пересоздаёт каталоги <code>build/</code> и <code>dist/</code>.
+          Параметр <code>--clean-db</code> удаляет файлы <code>*.db</code> в корне репозитория.</p>
 
         <h2>3. Автоматическая миграция схемы базы</h2>
-        <div class="callout">
-          <div class="callout-title">🔄 Контроль версий структуры</div>
-          DECUI вычисляет MD5-хеш метаданных всех классов. Если вы добавите новое поле в код и запустите обновленный <code>.exe</code>, фреймворк обнаружит изменение схемы и выполнит чистый апгрейд таблиц.
+        <p>Сохраните исходную базу через «Данные → Сохранить резервную копию».
+          В каталоге приложения проверьте изменённые модели командой ниже.
+          DECUI сделает временную копию резервного файла, применит изменения и
+          проверит ссылочную целостность. Сверьте результат на тестовых записях,
+          затем запустите приложение с прежним <code>app_id</code> или <code>db_path</code>.</p>
+        <div class="code-container" id="migration-check">
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+          <pre><code class="language-bash">uv run --locked decui check app.py --backup /path/to/before-update.sqlite3</code></pre>
         </div>
+        <p>При запуске с существующей базой DECUI добавляет новые таблицы и
+          столбцы. В старых строках новые поля будут пустыми. Для переименования
+          передайте явные соответствия через <code>column_renames</code> или
+          <code>table_part_renames</code>. Удаление столбца из существующей
+          таблицы требует отдельной миграции.</p>
 
         <div class="step-footer">
           <button class="btn btn-secondary" onclick="goToStep(6)">⬅ Назад</button>
@@ -1379,26 +1687,28 @@ layout.addWidget(chart)</code></pre>
         <p class="lead">Как писать меньше шаблонного кода, ускорить разработку и легко тестировать приложения.</p>
 
         <h2>1. Консольная утилита decui</h2>
-        <p>DECUI включает удобный интерфейс командной строки для генерации проектов, запуска и тестирования:</p>
+        <p>Из корня репозитория создайте проект с клиентами, заказами и отчётом.
+          Шаблон <code>orders</code> включает тест проведения заказа.
+          Команда <code>run</code> ищет <code>app.py</code>, затем <code>main.py</code>.
+          В активном окружении те же команды доступны через <code>decui</code>
+          или <code>python -m decui.cli</code>.</p>
 
         <div class="code-container">
           <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
-          <pre><code class="language-bash"># Создать готовый проект со справочниками, документами и отчетами
-decui new my_erp
-cd my_erp
-
-# Проверить модели, ссылки Ref и схему БД без запуска окна GUI
-decui check
-
-# Запустить приложение (автоматически находит app.py или main.py)
-decui run
-
-# Запустить тесты (автоматически настраивает offscreen-режим для GUI)
-decui test -v
-
-# Собрать приложение в автономный бинарник
-decui build</code></pre>
+          <pre><code class="language-bash">uv run --locked decui new my_orders --template orders
+cd my_orders
+uv run --locked decui check
+uv run --locked decui test -q
+uv run --locked decui run</code></pre>
         </div>
+
+        <p>Тест шаблона проводит заказ через <code>db.post(order)</code> и проверяет признак проведения и сумму сохранённой строки.
+          Оба шаблона создают <code>.gitignore</code> для локальных баз SQLite, кэшей и результатов сборки.</p>
+        <p>Если целевая модель ссылки отсутствует, <code>decui check</code> показывает её имя и путь к месту использования,
+          например <code>SalesOrder.Items.product</code>. Проверка охватывает также параметры отчётов и измерения регистров.</p>
+        <p>Чтобы выбрать тесты по имени, выполните <code>decui test -k order</code>.
+          Флаги pytest можно указывать сразу после <code>decui test</code>.</p>
+        <p><a href="#step-7">Команды сборки для Linux и Windows</a>.</p>
 
         <h2>2. Авто-вывод названий полей (Auto-naming)</h2>
         <p>Вам больше не нужно повторять имена в дескрипторах. Первый аргумент <code>display_name</code> теперь опционален:</p>
@@ -1530,9 +1840,13 @@ from decui import (
     String, Integer, Decimal as D, Boolean, Date, DateTime, Time, Choice, Ref,
     
     # Отчёты
-    report, Report, QueryReport, Column,
+    report, Report, QueryReport, Column, register_report_rows,
     DateParam, StringParam, IntegerParam, DecimalParam, BooleanParam, RefParam, ChoiceParam,
-    
+
+    # Согласование, печать и права
+    Workflow, Transition, WorkflowEvent, PrintForm, PrintTable,
+    define_role, set_role, current_role, check_sequence, SequenceViolationError,
+
     # Сервис напоминаний и уведомлений
     ReminderService, ReminderDialog, celebrate_goal_completed,
 )
@@ -1551,9 +1865,13 @@ from decui import (
           <pre><code class="language-python"># Запуск настольного приложения:
 app = ERPApplication(
     title="Учетная система",      # Заголовок главного окна
-    app_id="my-app",             # Постоянное локальное хранилище
+    app_id="my-app",             # Постоянное локальное хранилище (или db_path="erp.db")
     start=Product,               # Первый экран после запуска
-    argv=None,                    # Аргументы командной строки sys.argv
+    first_run=None,              # Функция seed(db) при первом создании пустой БД
+    local_accounts=False,        # Включить вход по логину/паролю и ролям
+    column_renames=None,         # Словарь переименований колонок при обновлении схемы
+    table_part_renames=None,     # Словарь переименований табличных частей
+    argv=None,                   # Аргументы командной строки sys.argv
 )
 
 # Подключение фонового сервиса напоминаний о дедлайнах:
@@ -1589,8 +1907,8 @@ app.database      # Экземпляр Database для прямых запрос
             </tr>
             <tr>
               <td><code>db.save(entity)</code></td>
-              <td><code>db.save(entity: Entity) -> Entity</code></td>
-              <td>Сохраняет сущность (INSERT если id is None, иначе UPDATE) вместе со всеми строками спецификаций.</td>
+              <td><code>db.save(entity, *, validate=False) -&gt; Entity</code></td>
+              <td>Сохраняет шапку и строки в одной транзакции. Вызывает <code>before_save(db)</code>. <code>validate=True</code> включает <code>on_validate()</code> и проверку полей.</td>
             </tr>
             <tr>
               <td><code>db.get(Class, id)</code></td>
@@ -1599,22 +1917,37 @@ app.database      # Экземпляр Database для прямых запрос
             </tr>
             <tr>
               <td><code>db.list(Class)</code></td>
-              <td><code>db.list(entity_cls) -> list[Entity]</code></td>
-              <td>Возвращает список всех записей (быстрая выборка без загрузки строк спецификаций).</td>
+              <td><code>db.list(entity_cls, *, include_table_parts=False) -&gt; list[Entity]</code></td>
+              <td>Возвращает доступные записи. Передайте <code>include_table_parts=True</code>, чтобы загрузить строки табличных частей.</td>
             </tr>
             <tr>
               <td><code>db.filter(Class, **kwargs)</code></td>
-              <td><code>db.filter(entity_cls, **kwargs) -> list[Entity]</code></td>
-              <td>Выборка записей по точным значениям полей (например: <code>status="В работе"</code>).</td>
+              <td><code>db.filter(entity_cls, *, order_by=None, limit=None, include_table_parts=False, **kwargs) -&gt; list[Entity]</code></td>
+              <td>Отбор по значениям полей. <code>date__date_range=(start, end)</code> включает оба граничных дня целиком для поля <code>date</code> типа <code>Date</code> или <code>DateTime</code>. Граница <code>None</code> оставляет период открытым с соответствующей стороны.</td>
             </tr>
             <tr>
               <td><code>db.delete(entity)</code></td>
               <td><code>db.delete(entity: Entity)</code></td>
-              <td>Каскадно удаляет запись и все связанные с ней строки спецификаций.</td>
+              <td>Каскадно удаляет запись, строки спецификаций и движения регистров документа.</td>
+            </tr>
+            <tr>
+              <td><code>db.post(doc)</code> / <code>db.unpost(doc)</code></td>
+              <td><code>db.post(document)</code> / <code>db.unpost(document)</code></td>
+              <td>Проводит документ (с проверкой прав, валидацией, хронологией и обновлением движений) или отменяет проведение.</td>
+            </tr>
+            <tr>
+              <td><code>db.transition(entity, label)</code></td>
+              <td><code>db.transition(entity, label: str) -&gt; Entity</code></td>
+              <td>Выполняет переход маршрута <code>Workflow</code>, проверяя роль и назначение, и сохраняет событие в <code>db.workflow_history(entity)</code>.</td>
+            </tr>
+            <tr>
+              <td><code>db.backup(path)</code></td>
+              <td><code>db.backup(destination: str | Path) -&gt; Path</code></td>
+              <td>Сохраняет согласованную резервную копию базы SQLite.</td>
             </tr>
             <tr>
               <td><code>db.seed(entities)</code></td>
-              <td><code>db.seed(entities: list[Entity]) -> list[Entity]</code></td>
+              <td><code>db.seed(entities: list[Entity]) -&gt; list[Entity]</code></td>
               <td>Пакетное сохранение списка объектов (удобно для заполнения начальных данных).</td>
             </tr>
           </tbody>
@@ -1663,6 +1996,31 @@ app.database      # Экземпляр Database для прямых запрос
               <td><code>__primary_key__</code></td>
               <td><code>str</code></td>
               <td>Имя первичного ключа (по умолчанию <code>"id"</code>, INTEGER PRIMARY KEY AUTOINCREMENT).</td>
+            </tr>
+            <tr>
+              <td><code>__list_columns__</code> / <code>__list_order__</code></td>
+              <td><code>tuple</code> / <code>str</code></td>
+              <td>Состав и порядок колонок списка, начальная сортировка: <code>__list_columns__ = ("name", "price")</code>, <code>__list_order__ = "-price"</code>.</td>
+            </tr>
+            <tr>
+              <td><code>__form_groups__</code> / <code>__form_tabs__</code></td>
+              <td><code>dict[str, str]</code></td>
+              <td>Группировка полей и распределение реквизитов/табличных частей по вкладкам формы (<code>__form_table_tabs__</code> для таблиц).</td>
+            </tr>
+            <tr>
+              <td><code>__form_visible_when__</code> / <code>__required_when_visible__</code></td>
+              <td><code>dict</code> / <code>tuple</code></td>
+              <td>Условная видимость и обязательность полей по значению флага или выбора: <code>{"address": ("delivery", True)}</code>.</td>
+            </tr>
+            <tr>
+              <td><code>__workflow__</code> / <code>__print_form__</code></td>
+              <td><code>Workflow</code> / <code>PrintForm</code></td>
+              <td>Маршрут согласования статусов (<code>Transition</code>) и печатная HTML/PDF-форма документа.</td>
+            </tr>
+            <tr>
+              <td><code>__owner_field__</code> / <code>__permissions__</code></td>
+              <td><code>str</code> / <code>dict</code></td>
+              <td>Ограничение доступа по владельцу, ролям (<code>__field_read_roles__</code>, <code>__field_write_roles__</code>, <code>__command_roles__</code>) и контроль хронологии <code>__sequence__ = True</code>.</td>
             </tr>
           </tbody>
         </table>
@@ -1741,8 +2099,8 @@ app.database      # Экземпляр Database для прямых запрос
               <td><code>Ref</code></td>
               <td>QComboBox (со списком)</td>
               <td>INTEGER FK</td>
-              <td><code>target: type</code>, <code>representation_field="name"</code>, <code>auto_fill=dict</code>, <code>required=False</code></td>
-              <td><code>client = Ref(Customer, "Клиент", auto_fill={"price": "standard_price"})</code></td>
+              <td><code>target: type</code>, <code>representation_field="name"</code>, <code>auto_fill="поле"</code>, <code>related_list</code>, <code>choice_filter</code>, <code>create_from</code>, <code>basis_fields</code>, <code>basis_tables</code>, <code>on_delete</code>, <code>required=False</code></td>
+              <td><code>client = Ref(Customer, "Клиент", auto_fill="phone")</code></td>
             </tr>
           </tbody>
         </table>
@@ -1894,6 +2252,11 @@ Student.name           # -> возвращает дескриптор поля S
             в порядке доступных колонок. Строки добавляются в черновик формы.
             Справа в редакторе поля Studio обновляет предпросмотр при изменении подписи, типа, вкладки или группы.</p>
 
+        <p>У <code>Ref</code> параметр <code>related_list</code> открывает дочерние записи
+          в карточке родителя, <code>choice_filter={"owner": "customer"}</code> ограничивает
+          варианты в шапке, а <code>auto_fill="phone"</code> копирует значение.
+          <a href="#step-2">Примеры трёх настроек</a>.</p>
+
         <h2>5. Табличные части и спецификации (`@line_items` / `@tab_part`)</h2>
         <p>Табличные части объявляются как внутренние классы с декоратором <code>@line_items</code>:</p>
         <div class="code-container">
@@ -1922,7 +2285,7 @@ class Invoice(Transaction):
 
     def add_standard_item(self, product_obj, qty=1):
         # 3. Программное добавление новой строки в спецификацию:
-        self.Items.add(product=product_obj._id, quantity=qty, price=product_obj.price, amount=qty * product_obj.price)</code></pre>
+        self.Items.add(product=product_obj.id, quantity=qty, price=product_obj.price, amount=qty * product_obj.price)</code></pre>
         </div>
 
         <div class="callout tip">
@@ -1935,6 +2298,8 @@ class Invoice(Transaction):
 
         <!-- SUBSECTION 6: ACTIONS & VALIDATION -->
         <h2>6. Действия на форме, бизнес-логика и валидация (`@action`)</h2>
+        <p><code>before_save(db)</code> действует и в форме, и при прямом сохранении.
+          Передайте <code>db.save(entity, validate=True)</code>, чтобы также вызвать <code>on_validate()</code>.</p>
         <div class="code-container">
           <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
           <pre><code class="language-python">import datetime
@@ -1988,19 +2353,21 @@ def get_ledger_entries(self):
 # Запрос мгновенного баланса:
 balances = get_ledger_balance(db, WarehouseStock, warehouse=1, group_by=["product"])
 
-# 2. Регистр сведений (периодические параметры)
 @history_register
-class PriceHistory(HistoryRegister):
-    product = Dimension("Товар")
-    price   = Resource("Цена")
+class Prices:
+    product = RefDimension(Product, &quot;Товар&quot;)
+    supplier = RefDimension(Supplier, &quot;Поставщик&quot;)
+    price = Resource(&quot;Цена&quot;)
 
-# Запись и чтение среза последних:
-set_record(db, PriceHistory, dimensions={"product": 1}, resources={"price": 1500.00})
-latest = get_latest(db, PriceHistory, product=1) # -> {"price": 1500.00}</code></pre>
+latest = get_latest(db, Prices, on_date=order.date,
+                    product=product.id, supplier=order.supplier)</code></pre>
         </div>
 
         <!-- SUBSECTION 8: REPORTS -->
         <h2>8. Параметрические отчёты (`@report` / `QueryReport`)</h2>
+        <p><code>execute(db, **params)</code> получает параметры формы по именам.
+          Сопоставьте их с условиями запроса и возвращайте список словарей с ключами из <code>Column</code>.
+          Перед обходом строк документа загружайте его через <code>db.get(Class, entity.id)</code>.</p>
         <p>Поддерживают автоматический запуск при открытии (<code>auto_run = True</code>), сортировку с закреплением строки «Итого» внизу, <b>экспорт в CSV</b> и переход к записи по двойному клику (<code>_entity_class</code> + <code>_entity_id</code>).</p>
         <table class="table-custom">
           <thead>
@@ -2012,19 +2379,19 @@ latest = get_latest(db, PriceHistory, product=1) # -> {"price": 1500.00}</code><
           </thead>
           <tbody>
             <tr>
-              <td><code>label</code></td>
+              <td><code>title</code></td>
               <td><code>str</code></td>
               <td>Текст в заголовке колонки таблицы.</td>
             </tr>
             <tr>
-              <td><code>key</code></td>
+              <td><code>field</code></td>
               <td><code>str</code></td>
               <td>Имя ключа в словарях строк, возвращаемых методом <code>execute()</code>.</td>
             </tr>
             <tr>
               <td><code>width</code></td>
               <td><code>int</code></td>
-              <td>Ширина колонки в пикселях (по умолчанию 120).</td>
+              <td>Ширина колонки в пикселях (по умолчанию <code>150</code>; <code>0</code> — растянуть на оставшуюся ширину).</td>
             </tr>
             <tr>
               <td><code>align</code></td>
@@ -2050,7 +2417,11 @@ latest = get_latest(db, PriceHistory, product=1) # -> {"price": 1500.00}</code><
         </table>
 
         <h3>Параметры формы отчета:</h3>
-        <p><code>DateParam</code>, <code>StringParam</code>, <code>IntegerParam</code>, <code>DecimalParam</code>, <code>BooleanParam</code>, <code>RefParam(Target)</code>, <code>ChoiceParam(choices=[...])</code>.</p>
+        <p><code>DateParam</code>, <code>StringParam</code>, <code>IntegerParam</code>, <code>DecimalParam</code>, <code>BooleanParam</code>, <code>RefParam("Метка", Target)</code>, <code>ChoiceParam(choices=[...])</code>.</p>
+
+        <p><code>RefParam("Поставщик", Supplier, from_record=True)</code> добавляет отчёт в меню
+          «Отчёты» сохранённой карточки <code>Supplier</code> и подставляет её идентификатор.
+          При <code>auto_run=True</code> отчёт формируется после заполнения фильтра.</p>
 
         <h3>Стилизация строк в отчетах (`_style`):</h3>
         <div class="code-container">
@@ -2110,30 +2481,32 @@ celebrate_goal_completed(message="Поздравляем! Цель успешн�
         <h2>11. Сборка в один файл (.exe) и консольный CLI</h2>
         <div class="code-container">
           <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
-          <pre><code class="language-bash"># Создание нового проекта из шаблона:
-decui new my_project
-
-# Проверка схемы моделей, Ref-ссылок и БД без запуска GUI:
-decui check
-
-# Запуск приложения:
-decui run main.py
-
-# Компиляция в полностью автономный EXE (без Python у клиента):
-python build_exe.py
-# Результат сохраняется в dist/ERP.exe (Windows) или dist/ERP (Linux)</code></pre>
+          <pre><code class="language-bash">uv run --locked decui new my_orders --template orders
+cd my_orders
+uv run --locked decui check
+uv run --locked decui test -q
+uv run --locked decui run</code></pre>
         </div>
+        <p>Для краткого вывода pytest запустите <code>decui test -q test_app.py</code>.
+          <code>decui check</code> указывает, в каком поле, строке документа, параметре отчёта или измерении регистра
+          используется незарегистрированная ссылочная модель. См. <a href="#step-7">сборку приложения через PyInstaller</a>.</p>
 
         <!-- SUBSECTION 12: PITFALLS & FAQ -->
         <h2>12. Частые вопросы и архитектурные тонкости (FAQ)</h2>
         <div class="callout info">
           <div class="callout-title">1. Загрузка спецификаций: почему <code>db.list()</code> не возвращает строки?</div>
-          В целях высокой производительности метод <code>db.list(Class)</code> загружает только заголовки (шапки) документов для отображения в таблице. Чтобы загрузить документ со всеми строками спецификаций, используйте <code>db.get(Class, id)</code> или <code>Class.get(db, id)</code>.
+          Методы <code>db.list(Class)</code> и <code>db.filter(Class, ...)</code> по умолчанию загружают шапки записей. Чтобы редактировать или проводить документы с табличными частями, загрузите их через <code>db.get(Class, id)</code> или передайте <code>include_table_parts=True</code> в выборку. Попытка сохранить шапку такой записи вызовет <code>ValueError</code>.
         </div>
 
         <div class="callout tip">
           <div class="callout-title">2. Живой поиск, быстрое создание Ref (+) и сортировка в списках</div>
-          В формах списков (<code>ListView</code>) доступен живой поиск (<code>Ctrl+F</code>), многотиповая сортировка (числа, даты, суммы), автоматическая подстановка имён из <code>Ref</code> вместо ID и подтверждение удаления. В формах редактирования (<code>AutoForm</code>) у ссылочных полей есть поиск и кнопка <code>+</code> для быстрого создания нового элемента справочника без закрытия текущей формы.
+          В списках <code>ListView</code> можно искать с помощью <kbd>Ctrl+F</kbd>, сортировать числа, даты
+          и суммы, видеть названия связанных записей и подтверждать удаление.
+          Клавиша <kbd>Esc</kbd> в поле поиска очищает запрос.
+          Кнопка «Сбросить» также снимает отбор по полям. <kbd>F5</kbd> обновляет список и сохраняет выбор,
+          если запись по-прежнему видна. В формах <code>AutoForm</code> у ссылочных полей есть поиск и кнопка
+          <code>+</code> для создания элемента справочника без закрытия текущей формы.
+          Вложенная карточка запрашивает решение о несохранённых правках при закрытии или нажатии <kbd>Esc</kbd>.
         </div>
 
         <div class="callout tip">
@@ -2141,8 +2514,187 @@ python build_exe.py
           DECUI отслеживает хэш схемы и выполняет <b>неразрушающий апгрейд</b> (<code>ALTER TABLE ADD COLUMN</code>) при добавлении новых полей — существующие данные пользователей сохраняются!
         </div>
 
+        <div class="callout info">
+          <div class="callout-title">4. Как обрабатываются ошибки базы данных и удаление проведённых документов?</div>
+          На уровне UI ошибки ограничений SQLite/SQLAlchemy (<code>UNIQUE</code>, <code>FOREIGN KEY</code>, <code>NOT NULL</code>, блокировка БД) автоматически переводятся в понятные русскоязычные сообщения, а технические подробности скрываются в деталях диалога. При удалении документа через <code>db.delete(doc)</code> или кнопку «Удалить» в списке все его движения в регистрах очищаются автоматически в той же транзакции.
+        </div>
+
         <div class="step-footer">
           <button class="btn btn-secondary" onclick="goToStep(8)">⬅ Назад</button>
+          <button class="btn btn-primary" onclick="markCompletedAndNext(9)">Далее: Полный гайд ➔</button>
+        </div>
+      </section>
+
+      <!-- STEP 10: FULL DEVELOPER GUIDE -->
+      <section class="step-section" id="step-10">
+        <div class="step-tag">Руководство разработчика</div>
+        <h1>Полный гайд по DECUI: архитектура, права и практики</h1>
+        <p>Сквозное руководство по построению настольных учётных систем на DECUI — от жизненного цикла сохранения и маршрутов согласования до прав доступа, печатных форм и чек-листа лучших практик.</p>
+
+        <h2>1. Жизненный цикл сохранения и проведения</h2>
+        <p>Единые правила в хуках класса работают одинаково и в форме <code>AutoForm</code>, и при прямых вызовах <code>db.save()</code> / <code>db.post()</code> в Python и тестах:</p>
+        <table class="table-custom">
+          <thead>
+            <tr>
+              <th>Этап / метод</th>
+              <th>Когда выполняется</th>
+              <th>Назначение</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>on_validate(self)</code></td>
+              <td>В форме всегда; в Python при <code>db.save(doc, validate=True)</code> и <code>db.post(doc)</code></td>
+              <td>Возвращает список ошибок <code>list[str]</code> без побочных эффектов.</td>
+            </tr>
+            <tr>
+              <td><code>before_save(self, db)</code></td>
+              <td>При каждом сохранении (в форме и в Python)</td>
+              <td>Пересчёт итогов, подстановка цен, бизнес-проверки (<code>ValueError</code> откатывает запись).</td>
+            </tr>
+            <tr>
+              <td><code>after_save(self, db)</code></td>
+              <td>После сохранения шапки и строк в транзакции</td>
+              <td>Пост-обработка после фиксации данных.</td>
+            </tr>
+            <tr>
+              <td><code>before_delete</code> / <code>after_delete</code></td>
+              <td>При удалении через <code>db.delete(obj)</code></td>
+              <td>Проверки и очистка; движения регистров документа удаляются автоматически в той же транзакции.</td>
+            </tr>
+            <tr>
+              <td><code>db.post(doc)</code> / <code>db.unpost(doc)</code></td>
+              <td>Проведение или отмена проведения документа</td>
+              <td>Проверяет права, последовательность <code>__sequence__</code>, запускает команду и переписывает движения регистров.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2>2. Маршруты согласования (<code>Workflow</code>)</h2>
+        <p>Для управления статусами, ролями и назначенными согласующими задайте атрибут <code>__workflow__</code> в классе сущности:</p>
+        <div class="code-container">
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+          <pre><code class="language-python">from decui import Document, String, Transition, Workflow, document
+
+@document
+class Invoice(Document):
+    status = String("Статус", default="Черновик", read_only=True)
+    approval_assignee = String("Согласующий")
+
+    __workflow__ = Workflow(
+        field="status",
+        initial="Черновик",
+        states=("Черновик", "На согласовании", "Утверждён"),
+        transitions=(
+            Transition("На согласование", "Черновик", "На согласовании", roles=("manager", "admin")),
+            Transition("Утвердить", "На согласовании", "Утверждён", roles=("admin",), assigned_only=True),
+        ),
+        post_states=("Утверждён",),  # проводить можно только утверждённый документ
+    )
+
+# Программный переход и история:
+invoice = db.transition(invoice, "На согласование")
+events = db.workflow_history(invoice)</code></pre>
+        </div>
+        <p>В карточке сохранённого документа автоматически появляются кнопки доступных текущей роли переходов и кнопка «История».</p>
+
+        <h2>3. Учётные записи и разграничение прав</h2>
+        <p>Передайте <code>local_accounts=True</code> в <code>ERPApplication(...)</code>, чтобы при первом запуске создать администратора и требовать вход по логину/паролю. На уровне сущности доступны настройки:</p>
+        <ul>
+          <li><code>__owner_field__ = "author"</code> — доступ к записи остаётся у её создателя и роли <code>admin</code> (плюс назначенный согласующий для перехода).</li>
+          <li><code>__permissions__</code> — матрица операций <code>{"read": (...), "create": (...), "update": (...), "delete": (...), "post": (...)}</code>.</li>
+          <li><code>__field_read_roles__</code> / <code>__field_write_roles__</code> — скрытие и защита отдельных полей и колонок (например, <code>"Items.cost"</code>).</li>
+          <li><code>__command_roles__</code> — ограничение кнопок <code>@action</code> / <code>@command</code> по ролям.</li>
+        </ul>
+
+        <h2>4. Печатные формы (<code>PrintForm</code>)</h2>
+        <div class="code-container">
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+          <pre><code class="language-python">from decui import PrintForm, PrintTable
+
+class Invoice(Document):
+    ...
+    __print_form__ = PrintForm(
+        title="Счёт на оплату",
+        fields=("number", "date", "customer", "total"),
+        tables=(PrintTable(part="Items", columns=("product", "quantity", "price", "amount")),),
+    )</code></pre>
+        </div>
+        <p>Для сохранённого документа в карточке появляется кнопка «Печатная форма» с просмотром HTML и экспортом в PDF. Печать берёт снимок из БД и учитывает <code>__field_read_roles__</code>.</p>
+
+        <h2>5. Сквозной мини-проект: от складов до отчёта по регистрам</h2>
+        <div class="code-container">
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+          <pre><code class="language-python">from decui import (
+    Column, Database, Integer, Ledger, LedgerEntry, MasterData, Metric,
+    QueryReport, Ref, RefDimension, String, Transaction,
+    ledger, line_items, master_data, register_report_rows, report, transaction,
+)
+
+@master_data
+class Warehouse(MasterData):
+    name = String("Склад", required=True, unique=True)
+
+@master_data
+class Product(MasterData):
+    name = String("Товар", required=True)
+
+@ledger
+class StockLedger(Ledger):
+    warehouse = RefDimension(Warehouse, "Склад")
+    product = RefDimension(Product, "Товар")
+    qty = Metric("Количество")
+
+@transaction
+class Receipt(Transaction):
+    warehouse = Ref(Warehouse, "Склад", required=True)
+
+    @line_items
+    class Items:
+        product = Ref(Product, "Товар", required=True)
+        qty = Integer("Количество", min_value=1, default=1)
+
+    def get_ledger_entries(self):
+        return [
+            LedgerEntry(
+                register=StockLedger,
+                dimensions={"warehouse": self.warehouse, "product": row["product"]},
+                resources={"qty": row["qty"]},
+                is_income=True,
+            )
+            for row in self.Items
+        ]
+
+@report
+class StockBalanceReport(QueryReport):
+    title = "Остатки по складам"
+    auto_run = True
+    columns = [
+        Column("Склад", "warehouse"),
+        Column("Товар", "product"),
+        Column("Остаток", "qty", align="right", aggregate="sum"),
+    ]
+
+    def execute(self, db: Database, **_kw):
+        return register_report_rows(db, StockLedger, ["warehouse", "product", "qty"])</code></pre>
+        </div>
+
+        <h2>6. Чек-лист лучших практик</h2>
+        <div class="callout tip">
+          <div class="callout-title">7 правил надёжного приложения DECUI</div>
+          <ol>
+            <li>Запуск окна и <code>first_run</code> держите под <code>if __name__ == "__main__":</code>, чтобы корректно работали <code>decui check</code> и тесты.</li>
+            <li>Перед редактированием или проведением загружайте строки через <code>db.get(Class, id)</code> или <code>include_table_parts=True</code>.</li>
+            <li>Для денег и количеств используйте <code>Decimal</code>, а не <code>float</code>.</li>
+            <li>В <code>Report.execute()</code> загружайте справочники одним словарём и возвращайте числа — форматируйте через <code>Column</code>.</li>
+            <li>Бизнес-проверки держите в <code>on_validate()</code> и <code>before_save(db)</code>, чтобы они действовали и в UI, и в Python API.</li>
+            <li>Для хранения базы у пользователей задавайте <code>app_id</code>, а перед обновлением схемы проверяйте копию через <code>decui check --backup</code>.</li>
+            <li>При тестировании нескольких БД изолированные модели создаются автоматически на каждый <code>Database.memory()</code> без конфликтов.</li>
+          </ol>
+        </div>
+
+        <div class="step-footer">
+          <button class="btn btn-secondary" onclick="goToStep(9)">⬅ Назад к API</button>
           <button class="btn btn-success" onclick="markCompletedAndFinish()">🎉 Обучение завершено!</button>
         </div>
       </section>
@@ -2157,7 +2709,7 @@ python build_exe.py
 
   <script>
     let currentStep = 1;
-    const totalSteps = 10;
+    const totalSteps = 11;
     const completedSteps = new Set(JSON.parse(localStorage.getItem('decui_completed_steps') || '[]'));
 
     function updateProgress() {
@@ -2177,15 +2729,17 @@ python build_exe.py
       localStorage.setItem('decui_completed_steps', JSON.stringify([...completedSteps]));
     }
 
-    function goToStep(index) {
+    function goToStep(index, updateHash = true) {
       currentStep = index;
+      const hash = `#step-${index}`;
+      if (updateHash && window.location.hash !== hash) history.pushState(null, "", hash);
       document.querySelectorAll('.step-section').forEach((sec, idx) => {
         sec.classList.toggle('active', idx === index);
       });
       document.querySelectorAll('.nav-item').forEach((item, idx) => {
         item.classList.toggle('active', idx === index);
       });
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+      window.scrollTo(0, 0);
       if (window.innerWidth <= 900) {
         document.getElementById('sidebar').classList.remove('open');
       }
@@ -2200,7 +2754,7 @@ python build_exe.py
     }
 
     function markCompletedAndFinish() {
-      completedSteps.add(9);
+      completedSteps.add(10);
       updateProgress();
       alert('🎉 Поздравляем! Вы полностью изучили DECUI и готовы строить современные настольные учетные системы на Python!');
     }
@@ -2284,8 +2838,13 @@ python build_exe.py
       document.body.classList.add('light');
     }
     updateProgress();
-    const linkedStep = /^#step-(\d)$/.exec(window.location.hash);
-    if (linkedStep) goToStep(Number(linkedStep[1]));
+    function openLinkedStep() {
+      const linkedStep = /^#step-(\d+)$/.exec(window.location.hash);
+      if (linkedStep && Number(linkedStep[1]) < totalSteps) goToStep(Number(linkedStep[1]), false);
+      else if (currentStep !== 1) goToStep(1, false);
+    }
+    openLinkedStep();
+    window.addEventListener('hashchange', openLinkedStep);
   </script>
 </body>
 </html>
