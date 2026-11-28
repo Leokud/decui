@@ -493,6 +493,7 @@ decui build app.py
 - [examples/features/purchase_orders.py](../../examples/features/purchase_orders.py) — поставщики, регистр сведений `Prices` на дату заказа, `before_save`, отчёт из карточки;
 - [examples/features/dependent_refs.py](../../examples/features/dependent_refs.py) — `related_list` и зависимый выбор `choice_filter`;
 - [examples/vunderkind.py](../../examples/vunderkind.py) — расписание, выбор дней, проверка пересечений времени;
+- [examples/custom_forms.py](../../examples/custom_forms.py) — кастомные декларативные (`__form__ = Form(...)`) и программируемые (`@form_for`, `EntityForm`) формы;
 - [examples/future_goals.py](../../examples/future_goals.py) — задачи, дедлайны, напоминания, прогресс и стилизация отчётов.
 
 ---

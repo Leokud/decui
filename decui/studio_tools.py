@@ -230,7 +230,7 @@ class FormPreviewDialog(QDialog):
         self,
         parent: QWidget | None,
         entity: StudioEntity,
-        preview_builder: Callable[[list[StudioField]], tuple[QWidget, FieldLayout]],
+        preview_builder: Callable[[list[StudioField]], tuple[QWidget, FieldLayout]] | None = None,
         project: StudioProject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -249,36 +249,41 @@ class FormPreviewDialog(QDialog):
         heading.setProperty("heading", True)
         body_layout.addWidget(heading)
 
-        visible_fields = [f for f in entity.fields if f.visible]
-        if entity.kind == "Документ":
-            visible_fields = [
-                StudioField("number", "Номер", "String", read_only=bool(entity.numbering_prefix)),
-                StudioField("date", "Дата", "DateTime", required=True),
-                StudioField("posted", "Проведён", "Boolean", read_only=True),
-                *visible_fields,
-            ]
-        panel, field_layout = preview_builder(visible_fields)
-        body_layout.addWidget(panel)
+        if (entity.form is not None and entity.form.enabled) or preview_builder is None:
+            from decui.studio_form_designer import render_studio_form_preview
 
-        if project is not None and project.initial_data:
-            self._populate_seed_refs(panel, visible_fields, project)
+            body_layout.addWidget(render_studio_form_preview(entity, project))
+        else:
+            visible_fields = [f for f in entity.fields if f.visible]
+            if entity.kind == "Документ":
+                visible_fields = [
+                    StudioField("number", "Номер", "String", read_only=bool(entity.numbering_prefix)),
+                    StudioField("date", "Дата", "DateTime", required=True),
+                    StudioField("posted", "Проведён", "Boolean", read_only=True),
+                    *visible_fields,
+                ]
+            panel, field_layout = preview_builder(visible_fields)
+            body_layout.addWidget(panel)
 
-        for part in entity.table_parts:
-            group = QGroupBox(f"Таблица: {part.label}")
-            part_layout = QVBoxLayout(group)
-            part_cols = [item for item in part.fields if item.visible]
-            table = QTableWidget(1, max(1, len(part_cols)))
-            table.setHorizontalHeaderLabels([item.label or item.name for item in part_cols] or ["Нет колонок"])
-            table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-            table.verticalHeader().setVisible(False)
-            table.setMaximumHeight(110)
-            table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-            part_layout.addWidget(table)
-            if part.form_tab.strip():
-                field_layout.add_to_tab(part.form_tab.strip(), group)
-                field_layout.tabs.setVisible(True)
-            else:
-                body_layout.addWidget(group)
+            if project is not None and project.initial_data:
+                self._populate_seed_refs(panel, visible_fields, project)
+
+            for part in entity.table_parts:
+                group = QGroupBox(f"Таблица: {part.label}")
+                part_layout = QVBoxLayout(group)
+                part_cols = [item for item in part.fields if item.visible]
+                table = QTableWidget(1, max(1, len(part_cols)))
+                table.setHorizontalHeaderLabels([item.label or item.name for item in part_cols] or ["Нет колонок"])
+                table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+                table.verticalHeader().setVisible(False)
+                table.setMaximumHeight(110)
+                table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+                part_layout.addWidget(table)
+                if part.form_tab.strip():
+                    field_layout.add_to_tab(part.form_tab.strip(), group)
+                    field_layout.tabs.setVisible(True)
+                else:
+                    body_layout.addWidget(group)
 
         meta_notes: list[str] = []
         if entity.calculations:

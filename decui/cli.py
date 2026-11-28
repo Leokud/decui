@@ -263,6 +263,7 @@ _HIDDEN_IMPORTS = [
     "sqlalchemy.orm",
     "decui",
     "decui.fields",
+    "decui.forms",
     "decui.entity",
     "decui.registry",
     "decui.commands",
@@ -281,6 +282,7 @@ _HIDDEN_IMPORTS = [
     "decui.ui.navigation",
     "decui.ui.report_view",
     "decui.ui.chart",
+    "decui.ui.theme",
 ]
 
 
@@ -532,7 +534,8 @@ def main() -> None:
 
     subparsers = parser.add_subparsers(dest="command", help="Команды")
 
-    subparsers.add_parser("studio", help="Открыть визуальный редактор DECUI Studio")
+    p_studio = subparsers.add_parser("studio", help="Открыть визуальный редактор DECUI Studio")
+    p_studio.add_argument("file", nargs="?", help="Необязательный путь к .decui.json или .py файлу")
 
     p_new = subparsers.add_parser("new", help="Создать проект DECUI")
     p_new.add_argument("name", help="Путь к каталогу нового проекта")
@@ -569,7 +572,7 @@ def main() -> None:
     if args.command == "studio":
         from decui.studio import run_studio
 
-        sys.exit(run_studio())
+        sys.exit(run_studio(args.file))
     elif args.command == "new":
         sys.exit(cmd_new(args))
     elif args.command == "run":

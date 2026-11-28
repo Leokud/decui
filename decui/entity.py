@@ -35,6 +35,7 @@ from .fields import (
 from .workflow import Workflow
 
 if TYPE_CHECKING:
+    from .forms import EntityForm, Form
     from .orm import Database
     from .printing import PrintForm
 
@@ -517,6 +518,8 @@ class Entity(metaclass=EntityMeta):
     __workflow__: ClassVar[Workflow | None] = None
     __owner_field__: ClassVar[str | None] = None
     __print_form__: ClassVar[PrintForm | None] = None
+    __form__: ClassVar[Form | type[EntityForm] | None] = None
+    __form_class__: ClassVar[type[EntityForm] | None] = None
     __permissions__: ClassVar[dict[str, tuple[str, ...]] | None] = None
     __field_write_roles__: ClassVar[dict[str, tuple[str, ...]] | None] = None
     __field_read_roles__: ClassVar[dict[str, tuple[str, ...]] | None] = None

@@ -415,10 +415,14 @@ def _string_editor(field: StringField, parent: QWidget | None = None) -> QWidget
         plain_edit.setMaximumHeight(112)
         plain_edit.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
         plain_edit.setReadOnly(field.read_only)
+        if getattr(field, "placeholder", ""):
+            plain_edit.setPlaceholderText(field.placeholder)
         return plain_edit
     w = QLineEdit(parent)
     w.setMaxLength(field.max_length or 255)
     w.setReadOnly(field.read_only)
+    if getattr(field, "placeholder", ""):
+        w.setPlaceholderText(field.placeholder)
     return w
 
 

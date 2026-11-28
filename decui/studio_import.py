@@ -10,6 +10,8 @@ from pathlib import Path
 from decui.studio_project import (
     StudioEntity,
     StudioField,
+    StudioFormConfig,
+    StudioFormNode,
     StudioPrintForm,
     StudioProject,
     StudioRegister,
@@ -190,7 +192,8 @@ def _parse_field(
             labels: list[str] = []
             for entry in raw_choices:
                 if isinstance(entry, (list, tuple)) and len(entry) >= 2:
-                    labels.append(str(entry[1]))
+                    c_code, c_lbl = str(entry[0]), str(entry[1])
+                    labels.append(c_lbl if c_code == c_lbl else f"{c_code}: {c_lbl}")
                 elif isinstance(entry, (list, tuple)) and len(entry) == 1:
                     labels.append(str(entry[0]))
                 else:
@@ -251,6 +254,7 @@ def _parse_field(
         representation_field=kw_str("representation_field"),
         auto_fill=kw_str("auto_fill"),
         visible=kw_bool("visible", True),
+        placeholder=kw_str("placeholder"),
     )
 
 
@@ -280,6 +284,98 @@ def _parse_workflow(node: ast.Call, env: dict[str, object]) -> StudioWorkflow | 
     if not states:
         return None
     return StudioWorkflow(states, initial or states[0], transitions, post_states, field_name)
+
+
+def _parse_form_node(node: ast.AST, env: dict[str, object]) -> StudioFormNode | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return StudioFormNode("field", target=node.value)
+    if not isinstance(node, ast.Call):
+        return None
+    cname = _call_name(node.func)
+    kw = {k.arg: k.value for k in node.keywords if k.arg}
+    args = list(node.args)
+
+    if cname == "FormField":
+        target = str(_safe_eval(args[0], env) if args else _safe_eval(kw.get("name", ast.Constant("")), env) or "")
+        lbl = str(_safe_eval(kw["label"], env) or "") if "label" in kw else ""
+        ph = str(_safe_eval(kw["placeholder"], env) or "") if "placeholder" in kw else ""
+        ro = _safe_eval(kw["read_only"], env) if "read_only" in kw else None
+        st = _safe_eval(kw["stretch"], env) if "stretch" in kw else 1
+        mw = _safe_eval(kw["min_width"], env) if "min_width" in kw else 0
+        vf, vv = "", True
+        if "visible_when" in kw:
+            vw = _safe_eval(kw["visible_when"], env)
+            if isinstance(vw, list) and len(vw) == 2:
+                vf = str(vw[0])
+                vv = vw[1] if isinstance(vw[1], bool) else str(vw[1])
+        return StudioFormNode(
+            "field", target=target, label=lbl, placeholder=ph,
+            read_only=ro if isinstance(ro, bool) else None,
+            stretch=int(st) if isinstance(st, int) else 1,
+            min_width=int(mw) if isinstance(mw, int) else 0,
+            visibility_field=vf, visibility_value=vv,
+        )
+    if cname == "FormTable":
+        target = str(_safe_eval(args[0], env) if args else _safe_eval(kw.get("name", ast.Constant("")), env) or "")
+        title = str(_safe_eval(kw["title"], env) or "") if "title" in kw else ""
+        mh = _safe_eval(kw["min_height"], env) if "min_height" in kw else 0
+        ro = bool(_safe_eval(kw["read_only"], env)) if "read_only" in kw else False
+        return StudioFormNode("table", target=target, title=title, min_height=int(mh) if isinstance(mh, int) else 0, read_only=ro)
+    if cname == "FormButton":
+        cmd = str(_safe_eval(args[0], env) if args else _safe_eval(kw.get("command", ast.Constant("")), env) or "")
+        lbl = str(_safe_eval(kw["label"], env) or "") if "label" in kw else ""
+        prim = bool(_safe_eval(kw["primary"], env)) if "primary" in kw else False
+        return StudioFormNode("button", target=cmd, label=lbl, primary=prim)
+    if cname == "FormLabel":
+        txt = str(_safe_eval(args[0], env) if args else _safe_eval(kw.get("text", ast.Constant("")), env) or "")
+        style = str(_safe_eval(kw["style"], env) or "normal") if "style" in kw else "normal"
+        return StudioFormNode("label", title=txt, style=style)
+    if cname == "FormDivider":
+        return StudioFormNode("divider")
+    if cname in ("FormRow", "FormColumn", "FormGroup", "FormTab", "FormTabs"):
+        children: list[StudioFormNode] = []
+        if cname in ("FormGroup", "FormTab"):
+            title = str(_safe_eval(args[0], env) if args else _safe_eval(kw.get("title", ast.Constant("")), env) or "")
+            child_asts = args[1:]
+        else:
+            title = ""
+            child_asts = args
+        for ch in child_asts:
+            parsed = _parse_form_node(ch, env)
+            if parsed is None:
+                return None
+            children.append(parsed)
+        if cname == "FormRow":
+            sp = _safe_eval(kw["spacing"], env) if "spacing" in kw else 12
+            return StudioFormNode("row", spacing=int(sp) if isinstance(sp, int) else 12, children=children)
+        if cname == "FormColumn":
+            st = _safe_eval(kw["stretch"], env) if "stretch" in kw else 1
+            sp = _safe_eval(kw["spacing"], env) if "spacing" in kw else 8
+            return StudioFormNode("column", stretch=int(st) if isinstance(st, int) else 1, spacing=int(sp) if isinstance(sp, int) else 8, children=children)
+        if cname == "FormGroup":
+            coll = bool(_safe_eval(kw["collapsible"], env)) if "collapsible" in kw else False
+            colp = bool(_safe_eval(kw["collapsed"], env)) if "collapsed" in kw else False
+            return StudioFormNode("group", title=title, collapsible=coll, collapsed=colp, children=children)
+        if cname == "FormTab":
+            return StudioFormNode("tab", title=title, children=children)
+        return StudioFormNode("tabs", children=children)
+    return None
+
+
+def _parse_form(node: ast.Call, env: dict[str, object]) -> StudioFormConfig | None:
+    if _call_name(node.func) != "Form":
+        return None
+    kw = {k.arg: k.value for k in node.keywords if k.arg}
+    items: list[StudioFormNode] = []
+    for arg in node.args:
+        parsed = _parse_form_node(arg, env)
+        if parsed is None:
+            return None
+        items.append(parsed)
+    title = str(_safe_eval(kw["title"], env) or "") if "title" in kw else ""
+    inc = bool(_safe_eval(kw["include_remaining"], env)) if "include_remaining" in kw else False
+    show_act = bool(_safe_eval(kw["show_actions"], env)) if "show_actions" in kw else True
+    return StudioFormConfig(enabled=True, title=title, include_remaining=inc, show_actions=show_act, items=items)
 
 
 def _parse_print_form(node: ast.Call, env: dict[str, object]) -> StudioPrintForm | None:
@@ -544,6 +640,8 @@ def import_python_project(
     import_lines: list[str] = []
     logic_blocks: list[str] = []
     notes: list[str] = []
+    entity_form_links: dict[str, str] = {}
+    parsed_form_classes: dict[str, tuple[str, StudioFormConfig | None, str]] = {}
 
     entity_names = {
         node.name
@@ -684,6 +782,7 @@ def import_python_project(
                 list_order = ""
                 workflow: StudioWorkflow | None = None
                 print_form: StudioPrintForm | None = None
+                entity_form: StudioFormConfig | None = None
                 fields: list[StudioField] = []
                 table_parts: list[StudioTablePart] = []
                 commands: dict[str, str] = {}
@@ -738,6 +837,11 @@ def import_python_project(
                             workflow = _parse_workflow(stmt.value, env)
                         elif attr == "__print_form__" and isinstance(stmt.value, ast.Call):
                             print_form = _parse_print_form(stmt.value, env)
+                        elif attr in ("__form__", "__form_class__"):
+                            if isinstance(stmt.value, ast.Call) and _call_name(stmt.value.func) == "Form":
+                                entity_form = _parse_form(stmt.value, env)
+                            elif isinstance(stmt.value, ast.Name):
+                                entity_form_links[node.name] = stmt.value.id
                         elif isinstance(stmt.value, ast.Call):
                             parsed = _parse_field(attr, stmt.value, env, entity_names)
                             if parsed is not None:
@@ -846,7 +950,34 @@ def import_python_project(
                     list_order=list_order,
                     commands=commands,
                     command_roles=command_roles,
+                    form=entity_form,
                 ))
+                continue
+
+            if any(b in ("EntityForm", "CustomForm") for b in base_names):
+                target_ent = ""
+                for d in node.decorator_list:
+                    if isinstance(d, ast.Call) and _call_name(d.func) == "form_for" and d.args and isinstance(d.args[0], ast.Name):
+                        target_ent = d.args[0].id
+                f_cfg: StudioFormConfig | None = None
+                f_methods: list[str] = []
+                for f_stmt in node.body:
+                    if isinstance(f_stmt, ast.Expr) and isinstance(f_stmt.value, ast.Constant) and isinstance(f_stmt.value.value, str):
+                        continue
+                    if (
+                        isinstance(f_stmt, ast.Assign)
+                        and len(f_stmt.targets) == 1
+                        and isinstance(f_stmt.targets[0], ast.Name)
+                        and f_stmt.targets[0].id == "layout"
+                        and isinstance(f_stmt.value, ast.Call)
+                    ):
+                        f_cfg = _parse_form(f_stmt.value, env)
+                    elif isinstance(f_stmt, ast.FunctionDef):
+                        f_methods.append(textwrap.dedent(ast.get_source_segment(source, f_stmt) or ""))
+                if f_cfg is not None or f_methods:
+                    parsed_form_classes[node.name] = (target_ent, f_cfg, "\n\n".join(f_methods))
+                    continue
+                logic_blocks.append(seg)
                 continue
 
             reg_kind = next((_REGISTER_DECORATORS[d] for d in dec_names if d in _REGISTER_DECORATORS), None)
@@ -887,6 +1018,16 @@ def import_python_project(
                 continue
 
             logic_blocks.append(seg)
+
+    ent_by_name = {ent.name: ent for ent in entities}
+    for form_cls_name, (target_ent, f_cfg, f_code) in parsed_form_classes.items():
+        ent_name = target_ent or next((e for e, fc in entity_form_links.items() if fc == form_cls_name), "")
+        ent = ent_by_name.get(ent_name)
+        if ent is not None:
+            if f_cfg is not None:
+                ent.form = f_cfg
+            if f_code:
+                ent.form_code = f_code
 
     if first_run_fn and first_run_fn != "_seed_initial_data":
         if not any("def configure_app" in block for block in logic_blocks):

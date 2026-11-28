@@ -52,7 +52,7 @@ class Invoice(Document):
 
 | Дескриптор | Qt-виджет | SQLite | Пример |
 |---|---|---|---|
-| `String("Имя")` | QLineEdit | VARCHAR | `name = String("Имя", required=True)` |
+| `String("Имя")` | QLineEdit | VARCHAR | `name = String("Имя", required=True, placeholder="ООО …")` |
 | `Integer("Кол-во", min_value=0)` | QSpinBox | INTEGER | `qty = Integer("Кол-во", default=1, min_value=0)` |
 | `Decimal("Цена", 10, 2)` | QDoubleSpinBox | NUMERIC | `price = D("Цена", precision=10, scale=2)` |
 | `Boolean("Флаг")` | QCheckBox | BOOLEAN | `done = Boolean("Готово")` |
@@ -195,6 +195,7 @@ class Student(MasterData):
 - `__list_columns__: tuple[str, ...]` и `__list_order__: str` — колонки и сортировка списка
 - `__form_groups__: dict`, `__form_tabs__: dict`, `__form_table_tabs__: dict` — группировка и вкладки карточки
 - `__form_visible_when__: dict` и `__required_when_visible__: tuple[str, ...]` — условная видимость и обязательность
+- `__form__: Form | type[EntityForm]` и `__form_class__: type[EntityForm]` — декларативная компоновка и программируемый контроллер формы (`@form_for`)
 - `__workflow__: Workflow` и `__print_form__: PrintForm` — маршрут согласования и печатная форма
 - `__owner_field__: str`, `__permissions__: dict`, `__field_read_roles__: dict`, `__field_write_roles__: dict`, `__command_roles__: dict` — доступ по ролям и владельцу
 - `__sequence__: bool` — контроль хронологии проведения документов
@@ -204,3 +205,66 @@ class Student(MasterData):
 - `Student.fields()` — словарь дескрипторов
 - `Student.name` — дескриптор поля на уровне класса
 - В конструкторе `Student(name=..., age=...)` IDE автоматически подсказывает сигнатуру благодаря `@dataclass_transform`!
+
+---
+
+## Кастомные формы (`Form` и `EntityForm`)
+
+Помимо стандартной вертикальной карточки можно задать точную многоколоночную компоновку в коде или настроить её визуально на вкладке **«Форма»** в `DECUI Studio`. Рабочий пример находится в [examples/custom_forms.py](../../examples/custom_forms.py).
+
+### 1. Декларативная компоновка (`__form__ = Form(...)`)
+
+```python
+from decui import (
+    Catalog, Choice, Form, FormColumn, FormDivider,
+    FormField, FormGroup, FormLabel, FormRow, String, catalog,
+)
+
+@catalog
+class Client(Catalog):
+    name  = String("Наименование", required=True, placeholder="ООО «Ромашка»")
+    kind  = Choice("Тип", choices=[("ORG", "Организация"), ("IND", "Физлицо")], default="ORG")
+    inn   = String("ИНН", placeholder="10 цифр")
+    phone = String("Телефон")
+    note  = String("Заметки", multiline=True)
+
+    __form__ = Form(
+        FormLabel("Карточка клиента", style="heading"),
+        FormRow(
+            FormColumn("name", "kind"),
+            FormColumn(FormField("inn", visible_when=("kind", "ORG")), "phone"),
+        ),
+        FormDivider(),
+        FormGroup("Заметки", "note", collapsible=True),
+    )
+```
+
+Доступные элементы:
+- `FormRow(...)`, `FormColumn(..., stretch=1)`, `FormGroup(title, ..., collapsible=True, collapsed=False)`
+- `FormTabs(FormTab("Вкладка", ...))` — вкладки произвольной вложенности
+- `FormField(name, label=..., placeholder=..., read_only=..., stretch=..., visible_when=...)`
+- `FormTable(name, title=..., min_height=..., read_only=...)` — табличная часть документа/справочника
+- `FormButton(command, label=..., primary=...)` — кнопка `@command`/`@action` или встроенного действия (`save`, `post`, `unpost`, `print`, `close`, `movements`)
+- `FormLabel(text, style="normal"|"heading"|"muted"|"info"|"warning")`, `FormDivider()`, `FormRelated(...)`, `FormWidget(factory)`
+
+### 2. Программируемый контроллер (`EntityForm` + `@form_for`)
+
+```python
+from decui import EntityForm, Form, FormButton, FormRow, FormTable, form_for
+
+@form_for(ServiceOrder)
+class ServiceOrderForm(EntityForm):
+    layout = Form(
+        FormRow("number", "date", "posted"),
+        FormTable("Lines", title="Состав работ", min_height=220),
+        FormRow("total", FormButton("calc", primary=True)),
+    )
+
+    def on_open(self) -> None: ...
+    def on_field_changed(self, field_name: str, value: object) -> None: ...
+    def on_table_changed(self, part_name: str) -> None: ...
+    def on_before_save(self) -> bool | None: ...
+    def build_extra(self, layout) -> None: ...
+```
+
+Методы контроллера `EntityForm`: `get_value`, `set_value`, `get_widget`, `get_table`, `set_visible`, `set_enabled`, `set_label`, `refresh`, `save`, `post`.

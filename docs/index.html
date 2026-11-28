@@ -2187,6 +2187,11 @@ app.database      # Экземпляр Database для прямых запрос
               <td>Группировка полей и распределение реквизитов/табличных частей по вкладкам формы (<code>__form_table_tabs__</code> для таблиц).</td>
             </tr>
             <tr>
+              <td><code>__form__</code> / <code>__form_class__</code></td>
+              <td><code>Form</code> / <code>type[EntityForm]</code></td>
+              <td>Декларативная компоновка кастомной формы (<code>FormRow</code>, <code>FormColumn</code>, <code>FormGroup</code>, <code>FormTabs</code>, <code>FormTable</code>, <code>FormButton</code>) и/или программируемый контроллер <code>@form_for(Entity)</code>.</td>
+            </tr>
+            <tr>
               <td><code>__form_visible_when__</code> / <code>__required_when_visible__</code></td>
               <td><code>dict</code> / <code>tuple</code></td>
               <td>Условная видимость и обязательность полей по значению флага или выбора: <code>{"address": ("delivery", True)}</code>.</td>
@@ -2222,8 +2227,8 @@ app.database      # Экземпляр Database для прямых запрос
               <td><code>String</code></td>
               <td>QLineEdit / QPlainTextEdit</td>
               <td>VARCHAR / TEXT</td>
-              <td><code>required=False</code>, <code>max_length=None</code>, <code>read_only=False</code>, <code>default=None</code>, <code>multiline=False</code></td>
-              <td><code>desc = String("Описание", multiline=True)</code></td>
+              <td><code>required=False</code>, <code>max_length=None</code>, <code>read_only=False</code>, <code>default=None</code>, <code>multiline=False</code>, <code>placeholder=""</code></td>
+              <td><code>desc = String("Описание", multiline=True, placeholder="Комментарий")</code></td>
             </tr>
             <tr>
               <td><code>Integer</code></td>
@@ -2430,6 +2435,42 @@ Student.name           # -> возвращает дескриптор поля S
             Кнопка «Вставить строки…» принимает ячейки из электронной таблицы без заголовков,
             в порядке доступных колонок. Строки добавляются в черновик формы.
             Справа в редакторе поля Studio обновляет предпросмотр при изменении подписи, типа, вкладки или группы.</p>
+
+        <h3>Кастомные формы (<code>__form__ = Form(...)</code> и <code>@form_for</code> / <code>EntityForm</code>)</h3>
+        <p>Для точной многоколоночной компоновки и программируемого поведения карточки опишите
+          <code>__form__ = Form(...)</code> в классе объекта или привяжите контроллер <code>EntityForm</code>
+          через декоратор <code>@form_for(Entity)</code>. Эти же формы редактируются визуально на вкладке
+          <b>«Форма»</b> в DECUI Studio:</p>
+        <div class="code-container">
+          <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
+          <pre><code class="language-python">from decui import (
+    EntityForm, Form, FormButton, FormColumn, FormDivider,
+    FormField, FormGroup, FormLabel, FormRow, FormTab, FormTable, FormTabs, form_for,
+)
+
+@form_for(ServiceOrder)
+class ServiceOrderForm(EntityForm):
+    layout = Form(
+        FormLabel("Заказ-наряд", style="heading"),
+        FormRow(
+            FormColumn("number", "date", "posted"),
+            FormColumn("client", FormField("address", visible_when=("need_delivery", True))),
+        ),
+        FormDivider(),
+        FormTabs(
+            FormTab("Работы", FormTable("Lines", title="Состав работ", min_height=220)),
+            FormTab("Дополнительно", FormGroup("Заметки", "notes", collapsible=True)),
+        ),
+        FormRow("total", FormButton("calc"), FormButton("post", primary=True)),
+    )
+
+    def on_open(self) -> None:
+        self.set_enabled("address", bool(self.get_value("need_delivery")))
+
+    def on_field_changed(self, field_name: str, value: object) -> None:
+        if field_name == "need_delivery":
+            self.set_enabled("address", bool(value))</code></pre>
+        </div>
 
         <p>У <code>Ref</code> параметр <code>related_list</code> открывает дочерние записи
           в карточке родителя, <code>choice_filter={"owner": "customer"}</code> ограничивает
@@ -2913,7 +2954,7 @@ class StockBalanceReport(QueryReport):
         <h2>1. Запуск, шаблоны и импорт Python</h2>
         <div class="code-container">
           <button class="copy-btn" onclick="copyCode(this)">Копировать</button>
-          <pre><code class="language-bash">uv run --locked decui studio</code></pre>
+          <pre><code class="language-bash">uv run --locked decui studio [app.py | project.decui.json]</code></pre>
         </div>
         <p>На стартовом экране или через кнопку <b>«Шаблоны»</b> доступны 6 готовых проектов:</p>
         <ul>
@@ -2939,7 +2980,16 @@ class StockBalanceReport(QueryReport):
         </ul>
         <p>Кнопка <b>«Предпросмотр формы»</b> открывает полную карточку объекта со всеми вкладками, группами, табличными частями и выпадающими списками, заполненными из <code>initial_data</code>.</p>
 
-        <h2>3. Табличные части, расчёты и проверки без кода</h2>
+        <h2>3. Конструктор форм (вкладка «Форма») и настройка без кода</h2>
+        <p>На вкладке <b>«Форма»</b> в DECUI Studio можно полностью спроектировать макет карточки без написания кода и сразу увидеть живой результат:</p>
+        <ul>
+          <li><b>Палитра и дерево макета:</b> строки (<code>FormRow</code>), колонки (<code>FormColumn</code>), сворачиваемые группы (<code>FormGroup</code>), вкладки (<code>FormTabs</code> / <code>FormTab</code>), поля с подсказками <code>placeholder</code> и условной видимостью (<code>visible_when</code>), табличные части (<code>FormTable</code>), кнопки команд (<code>FormButton</code>), заголовки (<code>FormLabel</code>) и разделители (<code>FormDivider</code>).</li>
+          <li><b>Быстрые шаблоны и синхронизация:</b> кнопка <b>«Заполнить по шаблону»</b> создаёт стандартный, двухколоночный или компактный макет, <b>«Добавить недостающие поля»</b> достраивает новые реквизиты, а справа открывается живой предпросмотр или отдельное окно <b>«Предпросмотр в окне»</b>.</li>
+          <li><b>Обработчики <code>EntityForm</code>:</b> в подвкладке <b>«Код формы (EntityForm)»</b> задаются хуки <code>on_open</code>, <code>on_field_changed</code>, <code>on_table_changed</code>, <code>on_before_save</code> и <code>build_extra</code> (со вставкой готовых шаблонов).</li>
+          <li><b>Кнопки действий без кода:</b> в окне <b>«Кнопки действий…»</b> кнопка <b>«Создать без кода…»</b> генерирует методы для изменения полей, проведения/отмены проведения, переходов согласования и обновления дат/счётчиков.</li>
+        </ul>
+
+        <h2>4. Табличные части, расчёты и проверки без кода</h2>
         <p>Над списком полей можно добавить одну или несколько табличных частей и указать им вкладку на форме. Кнопка <b>«Расчёты и проверки…»</b> генерирует методы <code>before_save()</code> и <code>on_validate()</code> без ручного кодирования:</p>
         <table>
           <thead>
@@ -2959,7 +3009,7 @@ class StockBalanceReport(QueryReport):
           </tbody>
         </table>
 
-        <h2>4. Регистры, движения, согласование и печать</h2>
+        <h2>5. Регистры, движения, согласование и печать</h2>
         <ul>
           <li><b>Вкладка «Регистры»:</b> создание регистров накопления и сведений, выбор типов измерений и ресурсов, настройка <code>representation_field</code> у измерений-ссылок, копирование и изменение порядка.</li>
           <li><b>Вкладка «Движения»:</b> привязка проведения документа к регистрам (на весь документ или по каждой строке табличной части), приход/расход или выбор поля даты записи (<code>period_field</code>) для регистров сведений.</li>
@@ -2967,7 +3017,7 @@ class StockBalanceReport(QueryReport):
           <li><b>Печатные формы и команды:</b> кнопка <b>«Настроить печатную форму»</b> выбирает реквизиты и колонки таблиц; кнопка <b>«Кнопки действий…»</b> связывает методы Python с кнопками формы и их ролями.</li>
         </ul>
 
-        <h2>5. Отчёты, диаграммы и живой предпросмотр</h2>
+        <h2>6. Отчёты, диаграммы и живой предпросмотр</h2>
         <p>На вкладке <b>«Отчёты»</b> формируются отчёты по объектам (шапка или строки табличной части), регистрам накопления и сведений:</p>
         <ul>
           <li><b>Базовые настройки:</b> колонки, сортировка, отбор по ссылке, дата отчёта, общие итоги и вложенные группировки (перетаскиванием порядка).</li>
@@ -2975,15 +3025,23 @@ class StockBalanceReport(QueryReport):
           <li><b>Живой предпросмотр:</b> кнопка <b>«Предпросмотр»</b> выполняет отчёт в изолированном процессе на начальных данных или рабочей базе и сразу показывает таблицу, параметры и диаграмму.</li>
         </ul>
 
-        <h2>6. Редактор Python и инструменты разработчика</h2>
+        <h2>7. Встроенная LSP IDE (Pyrefly) и инструменты разработчика</h2>
         <table>
           <thead>
             <tr><th>Инструмент / Вкладка</th><th>Возможности</th></tr>
           </thead>
           <tbody>
             <tr>
-              <td><b>Редактор Python</b></td>
-              <td>Нумерация строк, подсветка синтаксиса, <code>Tab</code>/<code>Shift+Tab</code>, поиск (<code>Ctrl+F</code>), поиск и замена (<code>Ctrl+H</code>), переход к строке (<code>Ctrl+G</code>), комментирование (<code>Ctrl+/</code>), автодополнение (<code>Ctrl+Space</code>) по символам проекта, кнопка <b>«К строке ошибки»</b> и подсветка строки ошибки.</td>
+              <td><b>Python IDE с Pyrefly LSP</b></td>
+              <td>Подсветка синтаксиса, волнистые подчёркивания диагностики в реальном времени, всплывающие подсказки типов (hover), сигнатуры вызовов (<code>Ctrl+Shift+Space</code>), умное автодополнение (<code>Ctrl+Space</code>, включая <code>self.</code> и поля DECUI), переход к определению (<code>F12</code> / <code>Ctrl+клик</code>), автозакрытие скобок/кавычек, поиск и замена (<code>Ctrl+F</code> / <code>Ctrl+H</code>), переход к строке (<code>Ctrl+G</code>) и комментирование (<code>Ctrl+/</code>).</td>
+            </tr>
+            <tr>
+              <td><b>Панель IDE (Проблемы и Символы)</b></td>
+              <td>Нижняя панель объединяет <b>«Журнал проекта»</b>, список <b>«Проблемы (LSP)»</b> и дерево <b>«Символы кода»</b> — двойной клик открывает нужный объект, вкладку и строку в редакторе.</td>
+            </tr>
+            <tr>
+              <td><b>Прямое редактирование <code>app.py</code></b></td>
+              <td>На вкладке <b>«Код проекта»</b> флажок <b>«Редактировать app.py напрямую (LSP IDE)»</b> включает редактирование всего кода проекта с LSP и кнопкой <b>«Применить код в Studio»</b> для синхронизации обратно в визуальные конструкторы.</td>
             </tr>
             <tr>
               <td><b>Вкладка «Обзор»</b></td>

@@ -89,6 +89,7 @@ class StudioSourceSpan:
     location: str
     text: str
     entity_name: str = ""
+    col_offset: int = 0
 
 
 @dataclass(frozen=True)
@@ -161,6 +162,7 @@ class StudioField:
     representation_field: str = ""
     auto_fill: str = ""
     visible: bool = True
+    placeholder: str = ""
 
 
 def _target_field_names(target: StudioEntity) -> set[str]:
@@ -223,6 +225,8 @@ def field_source(
     if item.kind == "String":
         if item.multiline:
             args.append("multiline=True")
+        if item.placeholder.strip():
+            args.append(f"placeholder={item.placeholder.strip()!r}")
         if item.max_length is not None:
             if isinstance(item.max_length, bool) or not isinstance(item.max_length, int) or item.max_length < 1:
                 raise ValueError(f"{owner}.{item.name}: длина строки должна быть положительным целым числом.")
@@ -282,14 +286,29 @@ def field_source(
         if item.currency.strip():
             args.append(f"currency={item.currency.strip()!r}")
     if item.kind == "Choice":
-        values = [value.strip() for value in item.choices.split(",") if value.strip()]
-        if not values or len(set(values)) != len(values):
+        choice_pairs: list[tuple[str, str]] = []
+        choice_codes: list[str] = []
+        for raw_opt in item.choices.split(","):
+            entry = raw_opt.strip()
+            if not entry:
+                continue
+            if ": " in entry:
+                code_part, _, label_part = entry.partition(": ")
+                code_s, label_s = code_part.strip(), label_part.strip()
+                if not code_s or not label_s:
+                    raise ValueError(f"{owner}.{item.name}: проверьте пару «код: подпись» в «{entry}».")
+                choice_pairs.append((code_s, label_s))
+                choice_codes.append(code_s)
+            else:
+                choice_pairs.append((entry, entry))
+                choice_codes.append(entry)
+        if not choice_codes or len(set(choice_codes)) != len(choice_codes):
             raise ValueError(f"{owner}.{item.name}: укажите уникальные варианты через запятую.")
         if item.default:
             chosen = [p.strip() for p in item.default.split("|") if p.strip()] if item.multi else [item.default]
-            if not chosen or not set(chosen).issubset(values):
+            if not chosen or not set(chosen).issubset(choice_codes):
                 raise ValueError(f"{owner}.{item.name}: значение по умолчанию должно входить в список вариантов.")
-        args.extend((f"choices={[(v, v) for v in values]!r}", f"multi={item.multi!r}"))
+        args.extend((f"choices={choice_pairs!r}", f"multi={item.multi!r}"))
     if not item.visible:
         args.append("visible=False")
     for option in ("required", "read_only", "indexed", "unique"):
@@ -459,6 +478,369 @@ class StudioPrintForm:
         ]
 
 
+FORM_NODE_KINDS = (
+    "row", "column", "group", "tabs", "tab", "field", "table", "button", "label", "divider",
+)
+FORM_LABEL_STYLES = ("normal", "heading", "muted", "info", "warning")
+FORM_BUILTIN_BUTTONS = {
+    "save": "Сохранить",
+    "save_and_close": "Сохранить и закрыть",
+    "post": "Провести",
+    "post_and_close": "Провести и закрыть",
+    "unpost": "Отменить проведение",
+    "print": "Печатная форма",
+    "movements": "Движения",
+    "close": "Закрыть",
+}
+
+
+@dataclass
+class StudioFormNode:
+    kind: str
+    target: str = ""
+    title: str = ""
+    label: str = ""
+    placeholder: str = ""
+    style: str = "normal"
+    stretch: int = 1
+    spacing: int = 12
+    min_width: int = 0
+    min_height: int = 0
+    read_only: bool | None = None
+    collapsible: bool = False
+    collapsed: bool = False
+    primary: bool = False
+    visibility_field: str = ""
+    visibility_value: bool | str = True
+    children: list[StudioFormNode] = field(default_factory=list)
+
+
+@dataclass
+class StudioFormConfig:
+    enabled: bool = False
+    title: str = ""
+    include_remaining: bool = False
+    show_actions: bool = True
+    items: list[StudioFormNode] = field(default_factory=list)
+
+
+def read_form_node(raw: dict[str, object]) -> StudioFormNode:
+    children_raw = raw.get("children", [])
+    return StudioFormNode(
+        kind=str(raw.get("kind", "field")),
+        target=str(raw.get("target", "")),
+        title=str(raw.get("title", "")),
+        label=str(raw.get("label", "")),
+        placeholder=str(raw.get("placeholder", "")),
+        style=str(raw.get("style", "normal")),
+        stretch=int(raw.get("stretch", 1)),  # type: ignore[call-overload]
+        spacing=int(raw.get("spacing", 12)),  # type: ignore[call-overload]
+        min_width=int(raw.get("min_width", 0)),  # type: ignore[call-overload]
+        min_height=int(raw.get("min_height", 0)),  # type: ignore[call-overload]
+        read_only=raw.get("read_only") if isinstance(raw.get("read_only"), bool) else None,
+        collapsible=bool(raw.get("collapsible", False)),
+        collapsed=bool(raw.get("collapsed", False)),
+        primary=bool(raw.get("primary", False)),
+        visibility_field=str(raw.get("visibility_field", "")),
+        visibility_value=raw.get("visibility_value", True),  # type: ignore[arg-type]
+        children=[read_form_node(c) for c in children_raw if isinstance(c, dict)],  # type: ignore[attr-defined]
+    )
+
+
+def read_form_config(raw: dict[str, object] | None) -> StudioFormConfig | None:
+    if raw is None:
+        return None
+    items_raw = raw.get("items", [])
+    return StudioFormConfig(
+        enabled=bool(raw.get("enabled", False)),
+        title=str(raw.get("title", "")),
+        include_remaining=bool(raw.get("include_remaining", False)),
+        show_actions=bool(raw.get("show_actions", True)),
+        items=[read_form_node(n) for n in items_raw if isinstance(n, dict)],  # type: ignore[attr-defined]
+    )
+
+
+def default_form_for_entity(entity: StudioEntity, preset: str = "standard") -> StudioFormConfig:
+    """Build an initial StudioFormConfig from an entity's fields and table parts."""
+    visible_fields = [f for f in entity.fields if f.visible]
+    items: list[StudioFormNode] = []
+
+    if preset == "compact" or (preset == "two_column" and entity.kind == "Документ"):
+        if entity.kind == "Документ":
+            items.append(StudioFormNode(
+                "row",
+                children=[
+                    StudioFormNode("field", target="number", stretch=1),
+                    StudioFormNode("field", target="date", stretch=1),
+                    StudioFormNode("field", target="posted", stretch=0),
+                ],
+            ))
+    elif entity.kind == "Документ":
+        items.append(StudioFormNode(
+            "row",
+            children=[
+                StudioFormNode("field", target="number", stretch=1),
+                StudioFormNode("field", target="date", stretch=1),
+                StudioFormNode("field", target="posted", stretch=0),
+            ],
+        ))
+
+    if preset == "two_column":
+        row_buf: list[StudioFormNode] = []
+        for f in visible_fields:
+            if f.multiline:
+                if row_buf:
+                    items.append(StudioFormNode("row", children=row_buf))
+                    row_buf = []
+                items.append(StudioFormNode("field", target=f.name))
+            else:
+                row_buf.append(StudioFormNode("field", target=f.name, stretch=1))
+                if len(row_buf) == 2:
+                    items.append(StudioFormNode("row", children=row_buf))
+                    row_buf = []
+        if row_buf:
+            items.append(StudioFormNode("row", children=row_buf))
+        if entity.table_parts:
+            tabs = [
+                StudioFormNode("tab", title=part.label or part.name, children=[StudioFormNode("table", target=part.name)])
+                for part in entity.table_parts
+            ]
+            items.append(StudioFormNode("tabs", children=tabs))
+        return StudioFormConfig(enabled=True, items=items)
+
+    # "standard" or "compact": respect existing form_tab / form_group settings
+    root_groups: dict[str, list[StudioFormNode]] = {}
+    tab_groups: dict[str, dict[str, list[StudioFormNode]]] = {}
+    for f in visible_fields:
+        node = StudioFormNode("field", target=f.name)
+        t = f.form_tab.strip()
+        g = f.form_group.strip()
+        if t:
+            tab_groups.setdefault(t, {}).setdefault(g, []).append(node)
+        else:
+            root_groups.setdefault(g, []).append(node)
+
+    for grp, nodes in root_groups.items():
+        if grp:
+            items.append(StudioFormNode("group", title=grp, children=nodes))
+        else:
+            items.extend(nodes)
+
+    tab_tables: dict[str, list[StudioFormNode]] = {}
+    inline_tables: list[StudioFormNode] = []
+    for part in entity.table_parts:
+        t_node = StudioFormNode("table", target=part.name)
+        t = part.form_tab.strip()
+        if t or (preset == "compact" and len(entity.table_parts) >= 1):
+            tab_tables.setdefault(t or part.label or part.name, []).append(t_node)
+        else:
+            inline_tables.append(t_node)
+
+    items.extend(inline_tables)
+    all_tab_names = list(dict.fromkeys([*tab_groups.keys(), *tab_tables.keys()]))
+    if all_tab_names:
+        tabs_nodes: list[StudioFormNode] = []
+        for tab_name in all_tab_names:
+            children: list[StudioFormNode] = []
+            for grp, nodes in tab_groups.get(tab_name, {}).items():
+                if grp:
+                    children.append(StudioFormNode("group", title=grp, children=nodes))
+                else:
+                    children.extend(nodes)
+            children.extend(tab_tables.get(tab_name, []))
+            tabs_nodes.append(StudioFormNode("tab", title=tab_name, children=children))
+        items.append(StudioFormNode("tabs", children=tabs_nodes))
+
+    return StudioFormConfig(enabled=True, items=items)
+
+
+def _iter_form_nodes(nodes: list[StudioFormNode]) -> list[StudioFormNode]:
+    out: list[StudioFormNode] = []
+    for node in nodes:
+        out.append(node)
+        out.extend(_iter_form_nodes(node.children))
+    return out
+
+
+def _rename_form_field(nodes: list[StudioFormNode], old: str, new: str) -> None:
+    for node in _iter_form_nodes(nodes):
+        if node.kind == "field" and node.target == old:
+            node.target = new
+        if node.visibility_field == old:
+            node.visibility_field = new
+
+
+def _rename_form_table(nodes: list[StudioFormNode], old: str, new: str) -> None:
+    for node in _iter_form_nodes(nodes):
+        if node.kind == "table" and node.target == old:
+            node.target = new
+
+
+def form_source(
+    entity: StudioEntity,
+    imports: set[str],
+    *,
+    indent: str = "    ",
+    attr_name: str = "__form__",
+) -> list[str]:
+    """Serialize entity.form into declarative Form(...) Python source lines."""
+    cfg = entity.form
+    if cfg is None or not cfg.enabled:
+        return []
+    known_fields = _target_field_names(entity)
+    fields_by_name = {f.name: f for f in entity.fields}
+    known_tables = {part.name for part in entity.table_parts}
+    known_commands = set(entity.commands) | set(FORM_BUILTIN_BUTTONS)
+
+    def render_node(node: StudioFormNode, pad: str) -> str:
+        if node.kind not in FORM_NODE_KINDS:
+            raise ValueError(f"{entity.label}: неизвестный элемент формы «{node.kind}».")
+        if node.kind == "field":
+            if node.target not in known_fields:
+                raise ValueError(f"{entity.label}: поле «{node.target}» на форме не найдено.")
+            imports.add("FormField")
+            args = [repr(node.target)]
+            if node.label.strip():
+                args.append(f"label={node.label.strip()!r}")
+            if node.placeholder.strip():
+                args.append(f"placeholder={node.placeholder.strip()!r}")
+            if node.read_only is not None:
+                args.append(f"read_only={node.read_only!r}")
+            if node.stretch != 1:
+                args.append(f"stretch={node.stretch}")
+            if node.min_width > 0:
+                args.append(f"min_width={node.min_width}")
+            if node.visibility_field:
+                ctrl = fields_by_name.get(node.visibility_field)
+                if ctrl is None or ctrl.name == node.target:
+                    raise ValueError(f"{entity.label}: проверьте условие видимости поля формы «{node.target}».")
+                if ctrl.kind == "Boolean":
+                    valid = isinstance(node.visibility_value, bool)
+                else:
+                    valid = ctrl.kind == "Choice" and not ctrl.multi
+                if not valid:
+                    raise ValueError(f"{entity.label}: недопустимое условие видимости на форме для «{node.target}».")
+                args.append(f"visible_when=({node.visibility_field!r}, {node.visibility_value!r})")
+            return f"{pad}FormField({', '.join(args)})"
+
+        if node.kind == "table":
+            if node.target not in known_tables:
+                raise ValueError(f"{entity.label}: табличная часть «{node.target}» на форме не найдена.")
+            imports.add("FormTable")
+            args = [repr(node.target)]
+            if node.title.strip():
+                args.append(f"title={node.title.strip()!r}")
+            if node.min_height > 0:
+                args.append(f"min_height={node.min_height}")
+            if node.read_only:
+                args.append("read_only=True")
+            return f"{pad}FormTable({', '.join(args)})"
+
+        if node.kind == "button":
+            if node.target not in known_commands:
+                raise ValueError(f"{entity.label}: кнопка формы ссылается на неизвестное действие «{node.target}».")
+            imports.add("FormButton")
+            args = [repr(node.target)]
+            if node.label.strip():
+                args.append(f"label={node.label.strip()!r}")
+            if node.primary:
+                args.append("primary=True")
+            return f"{pad}FormButton({', '.join(args)})"
+
+        if node.kind == "label":
+            imports.add("FormLabel")
+            style = node.style if node.style in FORM_LABEL_STYLES else "normal"
+            args = [repr(node.title or node.label)]
+            if style != "normal":
+                args.append(f"style={style!r}")
+            return f"{pad}FormLabel({', '.join(args)})"
+
+        if node.kind == "divider":
+            imports.add("FormDivider")
+            return f"{pad}FormDivider()"
+
+        if node.kind == "row":
+            imports.add("FormRow")
+            child_pad = pad + "    "
+            inner = [render_node(ch, child_pad) for ch in node.children]
+            kw = [f"spacing={node.spacing}"] if node.spacing != 12 else []
+            if not inner and not kw:
+                return f"{pad}FormRow()"
+            lines = [f"{pad}FormRow("]
+            lines.extend(f"{line}," for line in inner)
+            lines.extend(f"{child_pad}{k}," for k in kw)
+            lines.append(f"{pad})")
+            return "\n".join(lines)
+
+        if node.kind == "column":
+            imports.add("FormColumn")
+            child_pad = pad + "    "
+            inner = [render_node(ch, child_pad) for ch in node.children]
+            kw = []
+            if node.stretch != 1:
+                kw.append(f"stretch={node.stretch}")
+            if node.spacing != 8:
+                kw.append(f"spacing={node.spacing}")
+            lines = [f"{pad}FormColumn("]
+            lines.extend(f"{line}," for line in inner)
+            lines.extend(f"{child_pad}{k}," for k in kw)
+            lines.append(f"{pad})")
+            return "\n".join(lines)
+
+        if node.kind == "group":
+            imports.add("FormGroup")
+            child_pad = pad + "    "
+            inner = [render_node(ch, child_pad) for ch in node.children]
+            kw = []
+            if node.collapsible:
+                kw.append("collapsible=True")
+            if node.collapsed:
+                kw.append("collapsed=True")
+            lines = [f"{pad}FormGroup({node.title!r},"]
+            lines.extend(f"{line}," for line in inner)
+            lines.extend(f"{child_pad}{k}," for k in kw)
+            lines.append(f"{pad})")
+            return "\n".join(lines)
+
+        if node.kind == "tab":
+            imports.add("FormTab")
+            child_pad = pad + "    "
+            inner = [render_node(ch, child_pad) for ch in node.children]
+            lines = [f"{pad}FormTab({(node.title or 'Вкладка')!r},"]
+            lines.extend(f"{line}," for line in inner)
+            lines.append(f"{pad})")
+            return "\n".join(lines)
+
+        if node.kind == "tabs":
+            if any(ch.kind != "tab" for ch in node.children):
+                raise ValueError(f"{entity.label}: контейнер вкладок может содержать только вкладки (FormTab).")
+            imports.add("FormTabs")
+            child_pad = pad + "    "
+            inner = [render_node(ch, child_pad) for ch in node.children]
+            lines = [f"{pad}FormTabs("]
+            lines.extend(f"{line}," for line in inner)
+            lines.append(f"{pad})")
+            return "\n".join(lines)
+
+        raise ValueError(f"{entity.label}: неизвестный элемент формы «{node.kind}».")
+
+    imports.add("Form")
+    child_pad = indent + "    "
+    rendered_children = [render_node(item, child_pad) for item in cfg.items]
+    kw_args: list[str] = []
+    if cfg.title.strip():
+        kw_args.append(f"title={cfg.title.strip()!r}")
+    if cfg.include_remaining:
+        kw_args.append("include_remaining=True")
+    if not cfg.show_actions:
+        kw_args.append("show_actions=False")
+    result = [f"{indent}{attr_name} = Form("]
+    result.extend(f"{line}," for line in rendered_children)
+    result.extend(f"{child_pad}{kw}," for kw in kw_args)
+    result.append(f"{indent})")
+    return result
+
+
 @dataclass
 class StudioEntity:
     name: str
@@ -483,6 +865,8 @@ class StudioEntity:
     check_sequence: bool = False
     calculations: list[StudioCalculation] = field(default_factory=list)
     validations: list[StudioValidation] = field(default_factory=list)
+    form: StudioFormConfig | None = None
+    form_code: str = ""
 
     def list_field_options(self) -> dict[str, str]:
         options = {"date": "Дата", "number": "Номер", "posted": "Проведён"} if self.kind == "Документ" else {}
@@ -1811,6 +2195,8 @@ class StudioProject:
                         val.other = new
             elif val.kind == "unique_rows" and val.target == part and val.column == old:
                 val.column = new
+        if not part and entity.form is not None:
+            _rename_form_field(entity.form.items, old, new)
         for reg in self.registers:
             for member in reg.members:
                 if not part and member.target == entity.name and member.representation_field == old:
@@ -1875,6 +2261,8 @@ class StudioProject:
         for val in entity.validations:
             if val.kind in ("require_rows", "unique_rows") and val.target == old:
                 val.target = new
+        if entity.form is not None:
+            _rename_form_table(entity.form.items, old, new)
         for report in self.reports:
             if report.source_kind == "entity" and report.entity == entity.name and report.table_part == old:
                 report.table_part = new
@@ -1919,6 +2307,8 @@ class StudioProject:
                     **item, "fields": [StudioField(**f) for f in item["fields"]],
                     "print_form": StudioPrintForm(**item["print_form"]) if item.get("print_form") else None,
                     "workflow": read_workflow(item.get("workflow")),
+                    "form": read_form_config(item.get("form")),  # type: ignore[arg-type]
+                    "form_code": str(item.get("form_code", "")),
                     "movements": [StudioMovement(**m) for m in item.get("movements", [])],
                     "calculations": [StudioCalculation(**c) for c in item.get("calculations", [])],
                     "validations": [StudioValidation(**v) for v in item.get("validations", [])],
@@ -2001,9 +2391,12 @@ class StudioProject:
                 if controller.kind == "Boolean":
                     valid = isinstance(value, bool)
                 else:
-                    valid = controller.kind == "Choice" and not controller.multi and value in {
-                        option.strip() for option in controller.choices.split(",") if option.strip()
-                    }
+                    valid_codes: set[str] = set()
+                    for option in controller.choices.split(","):
+                        entry = option.strip()
+                        if entry:
+                            valid_codes.add(entry.partition(": ")[0].strip() if ": " in entry else entry)
+                    valid = controller.kind == "Choice" and not controller.multi and value in valid_codes
                 if not valid:
                     raise ValueError(f"{entity.label}, «{item.label}»: выберите допустимое значение условия видимости.")
                 conditions[item.name] = (controller.name, value)
@@ -2155,6 +2548,9 @@ class StudioProject:
                 if entity.print_form.tables:
                     imports.add("PrintTable")
                 lines.extend(entity.print_form.source(entity))
+            has_custom_form_code = bool(entity.form_code.strip())
+            if entity.form is not None and entity.form.enabled and not has_custom_form_code:
+                lines.extend(form_source(entity, imports, indent="    ", attr_name="__form__"))
             custom_methods = parse_studio_code(entity.code, "Код объекта", entity_name=entity.name)
             has_init = any(isinstance(node, ast.FunctionDef) and node.name == "__init__" for node in custom_methods.body)
             if not has_init:
@@ -2179,7 +2575,7 @@ class StudioProject:
                 body = entity.code.strip("\n").splitlines()
                 block_spans[len(blocks)] = StudioSourceSpan(
                     len(lines) + 2, len(body), len(entity.code) - len(entity.code.lstrip("\n")) + 1,
-                    "Код объекта", entity.code, entity.name,
+                    "Код объекта", entity.code, entity.name, col_offset=4,
                 )
                 lines.extend(("", *("    " + line if line else "" for line in body)))
             if entity.command_roles:
@@ -2197,6 +2593,20 @@ class StudioProject:
                     imports.add("command")
                     lines.append(f"    {name} = command({label.strip()!r})({name})")
             blocks.append("\n".join(lines))
+            if has_custom_form_code:
+                parse_studio_code(entity.form_code, "Код формы", entity_name=entity.name)
+                imports.update(("EntityForm", "form_for"))
+                form_cls_name = f"{entity.name}Form"
+                form_lines = [f"@form_for({entity.name})", f"class {form_cls_name}(EntityForm):"]
+                if entity.form is not None and entity.form.enabled:
+                    form_lines.extend(form_source(entity, imports, indent="    ", attr_name="layout"))
+                f_body = entity.form_code.strip("\n").splitlines()
+                block_spans[len(blocks)] = StudioSourceSpan(
+                    len(form_lines) + 2, len(f_body), len(entity.form_code) - len(entity.form_code.lstrip("\n")) + 1,
+                    "Код формы", entity.form_code, entity.name, col_offset=4,
+                )
+                form_lines.extend(("", *("    " + line if line else "" for line in f_body)))
+                blocks.append("\n".join(form_lines))
         by_entity = {entity.name: entity for entity in self.entities}
         for config in self.reports:
             if not identifier(config.name) or config.name in names or not config.title.strip():
@@ -2339,7 +2749,12 @@ class StudioProject:
         try:
             self.source()
         except StudioSyntaxError as exc:
-            tab = "Приложение" if exc.filename in ("Код перед объектами", "Код после объектов") else "Объект"
+            if exc.filename in ("Код перед объектами", "Код после объектов"):
+                tab = "Приложение"
+            elif exc.filename == "Код формы":
+                tab = "Форма"
+            else:
+                tab = "Объект"
             items.append(StudioDiagnostic("error", f"{exc.filename} (стр. {exc.lineno or 1}): {exc.msg}", exc.entity_name, tab))
         except ValueError as exc:
             items.append(StudioDiagnostic("error", str(exc)))
@@ -2358,6 +2773,15 @@ class StudioProject:
                     f"Объект «{entity.label}» не содержит собственных реквизитов или табличных частей.",
                     entity.name, "Объект",
                 ))
+            if entity.form is not None and entity.form.enabled and not entity.form.include_remaining:
+                placed = {n.target for n in _iter_form_nodes(entity.form.items) if n.kind == "field"}
+                missing_req = [f.label for f in entity.fields if f.required and f.visible and f.name not in placed]
+                if missing_req:
+                    items.append(StudioDiagnostic(
+                        "warning",
+                        f"На форме «{entity.label}» не размещены обязательные поля: {', '.join(missing_req)}.",
+                        entity.name, "Форма",
+                    ))
             if entity.kind == "Документ" and self.registers and not entity.movements and "get_movements" not in entity.code:
                 items.append(StudioDiagnostic(
                     "warning",
@@ -2384,6 +2808,165 @@ class StudioProject:
                 tab="Отчёты",
             ))
         return items
+
+    def lsp_document(self) -> tuple[str, list[StudioSourceSpan]]:
+        """Build a syntax-resilient virtual app.py and exact spans for live Pyrefly LSP analysis."""
+        spans: list[StudioSourceSpan] = []
+        imports = {
+            "ERPApplication", "Database", "Catalog", "Document", "catalog", "document",
+            "String", "Integer", "Decimal", "Boolean", "Date", "DateTime", "Time", "Choice", "Ref",
+            "tab_part", "command", "Movement", "Register", "accumulation", "information",
+            "Dimension", "RefDimension", "Resource", "Report", "QueryReport", "Column", "report",
+            "DateParam", "RefParam", "ChoiceParam", "StringParam", "IntegerParam", "DecimalParam", "BooleanParam",
+            "Form", "FormRow", "FormColumn", "FormGroup", "FormTabs", "FormTab", "FormField",
+            "FormTable", "FormButton", "FormLabel", "FormDivider", "EntityForm", "form_for",
+            "Transition", "Workflow", "PrintForm", "PrintTable", "get_latest", "get_balance",
+            "get_records", "set_record", "register_report_rows", "define_role", "set_role",
+        }
+        names = {e.name for e in self.entities if identifier(e.name)}
+        entities = {e.name: e for e in self.entities if identifier(e.name)}
+        registers = {r.name: r for r in self.registers if identifier(r.name)}
+
+        reg_blocks: list[str] = []
+        for reg in self.registers:
+            try:
+                reg_blocks.append(reg.source(names, imports, entities=entities))
+            except ValueError:
+                pass
+
+        entity_blocks: list[tuple[str, list[tuple[int, int, str, str, str, int]]]] = []
+        for entity in self.entities:
+            if not identifier(entity.name):
+                continue
+            decorator, base = ENTITY_TYPES.get(entity.kind, ("catalog", "Catalog"))
+            lines = [f"@{decorator}", f"class {entity.name}({base}):", f"    __verbose_name__ = {entity.label or entity.name!r}"]
+            for item in entity.fields:
+                if not identifier(item.name):
+                    continue
+                try:
+                    lines.append("    " + field_source(item, entity.name, names, imports, entities=entities, siblings=entity.fields))
+                except ValueError:
+                    lines.append(f"    {item.name} = String({item.label or item.name!r})")
+            for part in entity.table_parts:
+                if not identifier(part.name):
+                    continue
+                lines.extend(("", "    @tab_part", f"    class {part.name}:", f"        __verbose_name__ = {part.label or part.name!r}"))
+                for col in part.fields:
+                    if not identifier(col.name):
+                        continue
+                    try:
+                        lines.append("        " + field_source(col, part.name, names, imports, entities=entities, siblings=part.fields))
+                    except ValueError:
+                        lines.append(f"        {col.name} = String({col.label or col.name!r})")
+            if entity.workflow is not None:
+                try:
+                    lines.extend(entity.workflow.source())
+                except ValueError:
+                    pass
+            if entity.print_form is not None:
+                try:
+                    lines.extend(entity.print_form.source(entity))
+                except ValueError:
+                    pass
+            if entity.form is not None and entity.form.enabled and not entity.form_code:
+                try:
+                    lines.extend(form_source(entity, imports, indent="    ", attr_name="__form__"))
+                except ValueError:
+                    pass
+            lines.extend(("", "    def __init__(self, **values: Any) -> None:", "        super().__init__(**values)"))
+            if entity.movements:
+                try:
+                    lines.extend(movement_source(entity, registers))
+                except ValueError:
+                    pass
+            if entity.calculations or entity.validations:
+                try:
+                    v_lines, s_lines = calculations_and_validations_source(entity, entities, registers, imports)
+                    lines.extend(v_lines)
+                    lines.extend(s_lines)
+                except ValueError:
+                    pass
+
+            local_spans: list[tuple[int, int, str, str, str, int]] = []
+            code_lines = entity.code.split("\n")
+            if entity.code:
+                start_offset = len(lines) + 2
+                local_spans.append((start_offset, len(code_lines), "Код объекта", entity.code, entity.name, 4))
+                lines.extend(("", *("    " + ln if ln else "" for ln in code_lines)))
+            for cmd_name, cmd_lbl in entity.commands.items():
+                if identifier(cmd_name) and cmd_lbl.strip():
+                    lines.append(f"    {cmd_name} = command({cmd_lbl!r})({cmd_name})")
+            entity_blocks.append(("\n".join(lines), local_spans))
+
+            if entity.form_code or (entity.form is not None and entity.form.enabled and entity.form_code != ""):
+                f_lines_hdr = [f"@form_for({entity.name})", f"class {entity.name}Form(EntityForm):"]
+                if entity.form is not None and entity.form.enabled:
+                    try:
+                        f_lines_hdr.extend(form_source(entity, imports, indent="    ", attr_name="layout"))
+                    except ValueError:
+                        pass
+                f_code_lines = entity.form_code.split("\n")
+                f_spans: list[tuple[int, int, str, str, str, int]] = []
+                if entity.form_code:
+                    f_spans.append((len(f_lines_hdr) + 2, len(f_code_lines), "Код формы", entity.form_code, entity.name, 4))
+                    f_lines_hdr.extend(("", *("    " + ln if ln else "" for ln in f_code_lines)))
+                else:
+                    f_lines_hdr.append("    pass")
+                entity_blocks.append(("\n".join(f_lines_hdr), f_spans))
+
+        report_blocks: list[str] = []
+        for rep in self.reports:
+            try:
+                if rep.source_kind == "register" and rep.entity in registers:
+                    report_blocks.append(register_report_source(rep, registers[rep.entity], imports))
+                elif rep.source_kind == "entity" and rep.entity in entities:
+                    report_blocks.append(entity_report_source(rep, entities[rep.entity], imports))
+            except ValueError:
+                pass
+
+        preamble = (
+            "from __future__ import annotations\n\n"
+            "import datetime\n"
+            "from decimal import Decimal as DecimalValue\n"
+            "from typing import Any, ClassVar\n\n"
+            "from decui import (\n"
+            + "".join(f"    {name},\n" for name in sorted(imports)) + ")"
+        )
+
+        chunks: list[str] = []
+        line = 1
+
+        def append_chunk(text: str, raw_spans: list[tuple[int, int, str, str, str, int]] | tuple[()] = ()) -> None:
+            nonlocal line
+            if not text:
+                return
+            for rel_start, count, loc, raw_txt, ent_name, col_off in raw_spans:
+                spans.append(StudioSourceSpan(
+                    generated_start=line + rel_start - 1,
+                    line_count=count,
+                    editor_start=1,
+                    location=loc,
+                    text=raw_txt,
+                    entity_name=ent_name,
+                    col_offset=col_off,
+                ))
+            chunks.append(text)
+            line += text.count("\n") + 3
+
+        append_chunk(preamble)
+        if self.imports:
+            imp_lines = self.imports.split("\n")
+            append_chunk(self.imports, [(1, len(imp_lines), "Код перед объектами", self.imports, "", 0)])
+        for rb in reg_blocks:
+            append_chunk(rb)
+        for eb, e_spans in entity_blocks:
+            append_chunk(eb, e_spans)
+        for rep_b in report_blocks:
+            append_chunk(rep_b)
+        if self.logic:
+            log_lines = self.logic.split("\n")
+            append_chunk(self.logic, [(1, len(log_lines), "Код после объектов", self.logic, "", 0)])
+        return ("\n\n\n".join(chunks) + "\n"), spans
 
     def smoke_test_source(self, app_module: str = "app") -> str:
         """Generate a standalone pytest smoke suite for the exported application."""

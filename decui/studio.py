@@ -17,7 +17,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from PySide6.QtCore import QProcess, QProcessEnvironment, QSettings, QSignalBlocker, Qt, QUrl
+from PySide6.QtCore import QProcess, QProcessEnvironment, QSettings, QSignalBlocker, Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QDesktopServices, QKeySequence, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -47,6 +47,8 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -56,6 +58,8 @@ from decui.cli import build_arguments
 from decui.entity import Document
 from decui.fields import BasisTable, Field
 from decui.files import copy_sqlite, publish_new_file, stage_decui_backup
+from decui.studio_form_designer import FormDesignerWidget
+from decui.studio_lsp import LspLocation, LspSymbol, MappedDiagnostic, StudioLspBridge
 from decui.studio_project import (
     CURRENCY_PRESETS,
     DIMENSION_TYPES,
@@ -115,7 +119,7 @@ from decui.studio_tools import (
 )
 from decui.ui.editors import create_editor, get_editor_value
 from decui.ui.form import FieldLayout
-from decui.ui.python_editor import PythonEditor
+from decui.ui.python_editor import EditorDiagnostic, PythonEditor
 from decui.ui.theme import DESKTOP_STYLE
 
 _MAX_RECENT_PROJECTS = 8
@@ -152,6 +156,8 @@ def _field_summary(item: StudioField) -> str:
         parts.append("несколько")
     if item.kind == "String" and item.multiline:
         parts.append("многостр.")
+    if item.kind == "String" and item.placeholder:
+        parts.append("подсказка")
     if item.kind == "Decimal" and item.currency:
         parts.append(item.currency)
     if item.default:
@@ -188,8 +194,15 @@ class StudioWindow(QMainWindow):
         self._loading = False
         self._dirty = False
         self._entity_auto_name = False
+        self._source_edit_mode = False
+        self._source_dirty = False
+        self._mapped_diagnostics: list[MappedDiagnostic] = []
         self._undo_stack: list[str] = []
         self._redo_stack: list[str] = []
+        self._lsp_bridge = StudioLspBridge(self._lsp_snapshot, parent=self)
+        self._lsp_bridge.status_changed.connect(self._on_lsp_status)
+        self._lsp_bridge.mapped_diagnostics.connect(self._on_lsp_diagnostics)
+        self._lsp_bridge.symbols_updated.connect(self._on_lsp_symbols)
         self.process = QProcess(self)
         self.process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         self.process.readyReadStandardOutput.connect(self._read_output)
@@ -200,6 +213,11 @@ class StudioWindow(QMainWindow):
         self.resize(1120, 810)
         self._build()
         self._load_project()
+        auto_lsp = os.environ.get("DECUI_DISABLE_LSP") != "1" and (
+            not os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("DECUI_ENABLE_LSP") == "1"
+        )
+        if auto_lsp:
+            QTimer.singleShot(50, self._lsp_bridge.start)
 
     def _build(self) -> None:
         root = QWidget()
@@ -296,8 +314,30 @@ class StudioWindow(QMainWindow):
         left.addWidget(preset_btn)
         splitter.addWidget(sidebar)
 
+        right_container = QWidget()
+        right_layout = QVBoxLayout(right_container)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(4)
+        self._source_bar = QWidget()
+        source_bar_layout = QHBoxLayout(self._source_bar)
+        source_bar_layout.setContentsMargins(4, 2, 4, 2)
+        self.source_edit_check = QCheckBox("Редактировать app.py напрямую (LSP IDE)")
+        self.source_edit_check.toggled.connect(self._toggle_source_edit_mode)
+        source_bar_layout.addWidget(self.source_edit_check)
+        source_bar_layout.addStretch()
+        self.source_apply_btn = QPushButton("Применить код в Studio")
+        self.source_apply_btn.setProperty("primary", True)
+        self.source_apply_btn.setEnabled(False)
+        self.source_apply_btn.clicked.connect(self._apply_source_to_project)
+        source_bar_layout.addWidget(self.source_apply_btn)
+        self.source_reset_btn = QPushButton("Обновить из конструктора")
+        self.source_reset_btn.clicked.connect(self._reset_source_from_project)
+        source_bar_layout.addWidget(self.source_reset_btn)
+        self._source_bar.setVisible(False)
+        right_layout.addWidget(self._source_bar)
         self.tabs = QTabWidget()
-        splitter.addWidget(self.tabs)
+        right_layout.addWidget(self.tabs, 1)
+        splitter.addWidget(right_container)
         splitter.setSizes([255, 825])
         page = QScrollArea()
         page.setWidgetResizable(True)
@@ -502,6 +542,11 @@ class StudioWindow(QMainWindow):
         logic_box_layout.addWidget(self.logic)
         config.addRow("Код после объектов", logic_box)
 
+        self.form_designer = FormDesignerWidget()
+        self.form_designer.changed.connect(self._on_form_designer_changed)
+        self.form_designer.undo_requested.connect(self._push_undo)
+        self.tabs.addTab(self.form_designer, "Форма")
+
         reports = QWidget()
         self.tabs.addTab(reports, "Отчёты")
         report_layout = QVBoxLayout(reports)
@@ -634,6 +679,7 @@ class StudioWindow(QMainWindow):
 
         self.source = PythonEditor()
         self.source.setReadOnly(True)
+        self.source.textChanged.connect(self._on_source_edited)
         self.tabs.addTab(self.source, "Код проекта")
 
         self.overview = ProjectOverviewWidget(self._jump_to_diagnostic)
@@ -642,10 +688,22 @@ class StudioWindow(QMainWindow):
         self.tabs.currentChanged.connect(self._tab_changed)
         self.console = QPlainTextEdit()
         self.console.setReadOnly(True)
-        self.console.setMaximumHeight(95)
         self.console.setPlaceholderText("Результаты проверки и запуска")
+        self.problems_list = QListWidget()
+        self.problems_list.itemDoubleClicked.connect(self._jump_to_problem_item)
+        self.symbols_tree = QTreeWidget()
+        self.symbols_tree.setHeaderLabels(["Символ", "Подпись / тип", "Строка"])
+        self.symbols_tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.symbols_tree.itemDoubleClicked.connect(self._jump_to_symbol_item)
+
+        self.bottom_tabs = QTabWidget()
+        self.bottom_tabs.setMaximumHeight(135)
+        self.bottom_tabs.addTab(self.console, "Журнал проекта")
+        self.bottom_tabs.addTab(self.problems_list, "Проблемы (0)")
+        self.bottom_tabs.addTab(self.symbols_tree, "Символы кода")
+
         output_bar = QHBoxLayout()
-        output_bar.addWidget(QLabel("Журнал проекта"))
+        output_bar.addWidget(QLabel("Панель IDE и журнал"))
         output_bar.addStretch()
         copy_code = QPushButton("Копировать код")
         copy_code.clicked.connect(self._copy_project_code)
@@ -658,8 +716,22 @@ class StudioWindow(QMainWindow):
         self.diagnostic_button.clicked.connect(self._go_to_error)
         output_bar.addWidget(self.diagnostic_button)
         layout.addLayout(output_bar)
-        layout.addWidget(self.console)
+        layout.addWidget(self.bottom_tabs)
+
+        self.cursor_status_label = QLabel("Стр 1, Кол 1")
+        self.lsp_status_label = QLabel("LSP: отключён" if os.environ.get("DECUI_DISABLE_LSP") == "1" else "LSP: запуск…")
+        self.statusBar().addPermanentWidget(self.cursor_status_label)
+        self.statusBar().addPermanentWidget(self.lsp_status_label)
         self.statusBar().showMessage("Добавьте объект и поля, чтобы запустить приложение.")
+
+        current_entity = lambda: (self.current.name if self.current is not None else "")
+        self.code.bind_lsp(self._lsp_bridge, "Код объекта", current_entity, self._on_lsp_definition)
+        self.form_designer.form_code_editor.bind_lsp(self._lsp_bridge, "Код формы", current_entity, self._on_lsp_definition)
+        self.imports.bind_lsp(self._lsp_bridge, "Код перед объектами", on_definition=self._on_lsp_definition)
+        self.logic.bind_lsp(self._lsp_bridge, "Код после объектов", on_definition=self._on_lsp_definition)
+        self.source.bind_lsp(self._lsp_bridge, "Код проекта", on_definition=self._on_lsp_definition)
+        for ed in (self.code, self.form_designer.form_code_editor, self.imports, self.logic, self.source):
+            ed.cursor_location_changed.connect(self._update_cursor_indicator)
 
     def _snippet_menu(self, editor: PythonEditor, snippets: tuple[tuple[str, str], ...]) -> QMenu:
         menu = QMenu(self)
@@ -882,6 +954,7 @@ class StudioWindow(QMainWindow):
             return
         self._dirty = True
         self._update_window_title()
+        self._lsp_bridge.schedule_sync()
 
     def _refresh_undo_actions(self) -> None:
         if hasattr(self, "_undo_action"):
@@ -959,8 +1032,10 @@ class StudioWindow(QMainWindow):
                     words.append(f"self.{part.name}")
             for method_name in self.current.commands:
                 words.append(f"self.{method_name}")
-        for editor in (self.code, self.imports, self.logic):
+        for editor in (self.code, self.imports, self.logic, self.form_designer.form_code_editor, self.source):
             editor.set_completion_words(words)
+        if not self._loading:
+            self._lsp_bridge.schedule_sync()
 
     def _edit_rules(self) -> None:
         self._store()
@@ -1131,6 +1206,13 @@ class StudioWindow(QMainWindow):
             if clear_history:
                 self._undo_stack.clear()
                 self._redo_stack.clear()
+            self._source_edit_mode = False
+            self._source_dirty = False
+            if hasattr(self, "source_edit_check"):
+                with QSignalBlocker(self.source_edit_check):
+                    self.source_edit_check.setChecked(False)
+                self.source.setReadOnly(True)
+                self.source_apply_btn.setEnabled(False)
             self._dirty = repr(self.project) != self.saved
         finally:
             self._loading = False
@@ -1142,6 +1224,7 @@ class StudioWindow(QMainWindow):
         self._sync_editor_completions()
         self._refresh_undo_actions()
         self._update_window_title()
+        self._lsp_bridge.schedule_sync()
 
     def _refresh_entity_list(self, *, select_index: int | None = None) -> None:
         if select_index is None:
@@ -1232,6 +1315,7 @@ class StudioWindow(QMainWindow):
             self.current.check_sequence = self.check_sequence.isChecked()
             self.current.section = self.section.currentText()
             self.current.code = self.code.toPlainText()
+            self.current.form_code = self.form_designer.form_code_editor.toPlainText()
             self.current.numbering_prefix = self.prefix.text()
             self.current.numbering_field = self.number_field.text()
             self.current.numbering_pattern = self.numbering_pattern.currentText().strip()
@@ -1256,12 +1340,14 @@ class StudioWindow(QMainWindow):
         self.prefix.setText(entity.numbering_prefix)
         self.number_field.setText(entity.numbering_field)
         self.numbering_pattern.setCurrentText(entity.numbering_pattern)
+        self.form_designer.load_entity(self.current, self.project)
         self._update_numbering_sample()
         self._refresh_rules_label()
         self._show_table_parts()
         self._show_movements()
         self._show_workflow()
         self._sync_editor_completions()
+        self._apply_diagnostics_to_current()
 
     def _rename_item(self, label: str) -> None:
         item = self.entities.currentItem()
@@ -1786,6 +1872,8 @@ class StudioWindow(QMainWindow):
         required, multiline = QCheckBox(), QCheckBox()
         required.setChecked(item.required)
         multiline.setChecked(item.multiline)
+        placeholder = QLineEdit(item.placeholder)
+        placeholder.setPlaceholderText("Подсказка внутри пустого поля")
         max_length = QSpinBox()
         max_length.setRange(0, 10000)
         max_length.setSpecialValueText("Без ограничения (255)")
@@ -1920,6 +2008,7 @@ class StudioWindow(QMainWindow):
             option.setChecked(value)
         for title, widget in (("Имя Python", name), ("Подпись", label), ("Тип", kind),
                               ("Обязательное", required), ("Многострочное", multiline),
+                              ("Подсказка (placeholder)", placeholder),
                               ("Макс. длина", max_length),
                               ("Точность (Decimal)", precision), ("Знаков после запятой", scale),
                               ("Валюта", currency), ("Минимум", min_value), ("Максимум", max_value),
@@ -1966,8 +2055,14 @@ class StudioWindow(QMainWindow):
                 visibility_value.addItem("Нет", False)
             elif controller is not None:
                 for option in controller.choices.split(","):
-                    if value := option.strip():
-                        visibility_value.addItem(value, value)
+                    raw_opt = option.strip()
+                    if not raw_opt:
+                        continue
+                    code_opt, sep, lbl_opt = raw_opt.partition(": ")
+                    if sep and code_opt.strip():
+                        visibility_value.addItem(f"{lbl_opt.strip()} ({code_opt.strip()})", code_opt.strip())
+                    else:
+                        visibility_value.addItem(raw_opt, raw_opt)
             configurable = controller is not None and not required.isChecked()
             visibility_value.setEnabled(configurable)
             required_when_visible.setEnabled(configurable)
@@ -1994,6 +2089,7 @@ class StudioWindow(QMainWindow):
 
         def update_options(field_kind: str) -> None:
             form.setRowVisible(multiline, field_kind == "String")
+            form.setRowVisible(placeholder, field_kind == "String")
             form.setRowVisible(max_length, field_kind == "String")
             form.setRowVisible(precision, field_kind == "Decimal")
             form.setRowVisible(scale, field_kind == "Decimal")
@@ -2056,6 +2152,7 @@ class StudioWindow(QMainWindow):
                 representation_field=representation_field.currentText().strip() if field_kind == "Ref" else "",
                 auto_fill=auto_fill.currentText().strip() if field_kind == "Ref" else "",
                 visible=visible.isChecked(),
+                placeholder=placeholder.text().strip() if field_kind == "String" else "",
             )
 
         def accept_edit() -> None:
@@ -2077,7 +2174,11 @@ class StudioWindow(QMainWindow):
                     filters[key] = value
             draft = edited_field()
             if draft.kind == "Choice" and draft.default.strip():
-                options = [opt.strip() for opt in draft.choices.split(",") if opt.strip()]
+                options = [
+                    opt.strip().partition(": ")[0].strip() if ": " in opt else opt.strip()
+                    for opt in draft.choices.split(",")
+                    if opt.strip()
+                ]
                 if not draft.multi and draft.default.strip() not in options:
                     QMessageBox.warning(
                         dialog, "Значение по умолчанию",
@@ -2874,6 +2975,148 @@ class StudioWindow(QMainWindow):
         if entity.workflow is not None:
             reserved.update((entity.workflow.field_name, "approval_assignee"))
         new_methods: set[str] = set()
+        visual_bodies: dict[str, str] = {}
+
+        def _make_action_name(seed: str = "action") -> str:
+            base = suggest_identifier(seed) or "action"
+            if base in reserved or base in new_methods:
+                index = 1
+                while f"{base}_{index}" in reserved or f"{base}_{index}" in new_methods:
+                    index += 1
+                return f"{base}_{index}"
+            return base
+
+        def create_visual_action() -> None:
+            builder = QDialog(dialog)
+            builder.setWindowTitle("Создать действие без кода")
+            builder.resize(460, 260)
+            b_form = QFormLayout(builder)
+            b_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+            btn_label = QLineEdit("Отметить выполненным")
+            m_name = QLineEdit(_make_action_name(btn_label.text()))
+            m_auto = True
+
+            def _sync_m_name(txt: str) -> None:
+                if m_auto:
+                    with QSignalBlocker(m_name):
+                        m_name.setText(_make_action_name(txt))
+
+            def _stop_m_auto() -> None:
+                nonlocal m_auto
+                m_auto = False
+
+            btn_label.textChanged.connect(_sync_m_name)
+            m_name.textEdited.connect(_stop_m_auto)
+
+            action_kind = QComboBox()
+            action_kind.addItem("Установить значение поля", "set_field")
+            if entity.kind == "Документ":
+                action_kind.addItem("Провести документ", "post")
+                action_kind.addItem("Отменить проведение", "unpost")
+            if entity.workflow is not None:
+                action_kind.addItem("Изменить статус согласования", "workflow")
+            action_kind.addItem("Обновить поле текущей датой/временем", "set_now")
+            action_kind.addItem("Увеличить числовое поле на 1", "increment")
+
+            target_field = QComboBox()
+            for f in entity.fields:
+                target_field.addItem(f"{f.label} ({f.name})", f.name)
+            val_edit = QLineEdit()
+            val_edit.setPlaceholderText("Значение (текст, число или True/False)")
+            wf_state = QComboBox()
+            if entity.workflow is not None:
+                states = [entity.workflow.initial, *(t.target for t in entity.workflow.transitions if t.target)]
+                wf_state.addItems(list(dict.fromkeys(s for s in states if s)))
+
+            def _refresh_builder_rows() -> None:
+                k = action_kind.currentData()
+                b_form.setRowVisible(target_field, k in ("set_field", "set_now", "increment"))
+                b_form.setRowVisible(val_edit, k == "set_field")
+                b_form.setRowVisible(wf_state, k == "workflow")
+
+            action_kind.currentIndexChanged.connect(_refresh_builder_rows)
+            b_form.addRow("Подпись кнопки", btn_label)
+            b_form.addRow("Имя метода Python", m_name)
+            b_form.addRow("Что сделать", action_kind)
+            b_form.addRow("Поле", target_field)
+            b_form.addRow("Новое значение", val_edit)
+            b_form.addRow("Новый статус", wf_state)
+            _refresh_builder_rows()
+
+            b_btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+            b_btns.button(QDialogButtonBox.StandardButton.Ok).setText("Создать")
+            b_btns.rejected.connect(builder.reject)
+
+            def _accept_builder() -> None:
+                lbl = btn_label.text().strip()
+                fn = m_name.text().strip()
+                if not lbl or not identifier(fn) or fn in reserved or fn in new_methods:
+                    QMessageBox.warning(builder, "Проверьте данные", "Укажите уникальное имя метода и подпись кнопки.")
+                    return
+                k = action_kind.currentData()
+                f_name = target_field.currentData() or ""
+                if k == "set_field":
+                    if not f_name:
+                        QMessageBox.warning(builder, "Нет поля", "Добавьте хотя бы одно поле на объект.")
+                        return
+                    f_meta = next((item for item in entity.fields if item.name == f_name), None)
+                    raw_val = val_edit.text().strip()
+                    if f_meta is not None and f_meta.kind == "Boolean":
+                        lit = repr(raw_val.casefold() in ("1", "true", "да", "yes"))
+                    elif f_meta is not None and f_meta.kind == "Integer":
+                        try:
+                            lit = str(int(raw_val or "0"))
+                        except ValueError:
+                            QMessageBox.warning(builder, "Число", "Укажите целое число.")
+                            return
+                    elif f_meta is not None and f_meta.kind == "Decimal":
+                        try:
+                            Decimal(raw_val or "0")
+                            lit = f"Decimal({raw_val or '0'!r})"
+                        except (InvalidOperation, ValueError):
+                            QMessageBox.warning(builder, "Число", "Укажите корректное число.")
+                            return
+                    else:
+                        lit = repr(val_edit.text())
+                    body = f"    self.{f_name} = {lit}"
+                elif k == "post":
+                    body = '    self._data["posted"] = True'
+                elif k == "unpost":
+                    body = '    self._data["posted"] = False'
+                elif k == "workflow":
+                    wf_field = entity.workflow.field_name if entity.workflow else "status"
+                    body = f"    self.{wf_field} = {wf_state.currentText()!r}"
+                elif k == "set_now":
+                    if not f_name:
+                        QMessageBox.warning(builder, "Нет поля", "Добавьте хотя бы одно поле даты/времени.")
+                        return
+                    f_meta = next((item for item in entity.fields if item.name == f_name), None)
+                    if f_meta is not None and f_meta.kind == "Date":
+                        body = f"    from datetime import date\n    self.{f_name} = date.today()"
+                    elif f_meta is not None and f_meta.kind == "Time":
+                        body = f"    from datetime import datetime\n    self.{f_name} = datetime.now().time()"
+                    else:
+                        body = f"    from datetime import datetime\n    self.{f_name} = datetime.now()"
+                else:
+                    if not f_name:
+                        QMessageBox.warning(builder, "Нет поля", "Добавьте числовое поле на объект.")
+                        return
+                    body = f"    self.{f_name} = (self.{f_name} or 0) + 1"
+                new_methods.add(fn)
+                visual_bodies[fn] = body
+                methods.append(fn)
+                for row_i in range(table.rowCount()):
+                    picker = table.cellWidget(row_i, 0)
+                    if isinstance(picker, QComboBox):
+                        picker.addItem(fn)
+                add.setEnabled(True)
+                add_row(fn, lbl)
+                builder.accept()
+
+            b_btns.accepted.connect(_accept_builder)
+            b_form.addRow(b_btns)
+            builder.exec()
+            builder.deleteLater()
 
         def create_method() -> None:
             index = 1
@@ -2904,6 +3147,9 @@ class StudioWindow(QMainWindow):
         add.setEnabled(bool(methods))
         add.clicked.connect(lambda: add_row())
         controls.addWidget(add)
+        create_visual = QPushButton("Создать без кода…")
+        create_visual.clicked.connect(create_visual_action)
+        controls.addWidget(create_visual)
         create = QPushButton("Создать метод…")
         create.clicked.connect(create_method)
         controls.addWidget(create)
@@ -2945,9 +3191,10 @@ class StudioWindow(QMainWindow):
                     continue
                 code = entity.code.rstrip()
                 prefix = code + "\n\n" if code else ""
-                if first_body_line is None:
+                body = visual_bodies.get(name, "    pass")
+                if name not in visual_bodies and first_body_line is None:
                     first_body_line = prefix.count("\n") + 1
-                entity.code = prefix + f"def {name}(self) -> None:\n    pass\n"
+                entity.code = prefix + f"def {name}(self) -> None:\n{body}\n"
             self._sync_editor_completions()
             self._mark_dirty()
             dialog.accept()
@@ -3676,15 +3923,235 @@ class StudioWindow(QMainWindow):
         self._refresh_app_pickers()
         self._sync_editor_completions()
         widget = self.tabs.widget(index)
-        if widget is self.source:
+        if hasattr(self, "_source_bar"):
+            self._source_bar.setVisible(widget is self.source)
+        if widget is self.form_designer and self.current is not None:
+            self.form_designer.load_entity(self.current, self.project)
+            self._apply_diagnostics_to_current()
+        elif widget is self.source and not self._source_edit_mode:
             try:
-                self.source.setPlainText(self.project.source())
+                with QSignalBlocker(self.source):
+                    self.source.setPlainText(self.project.source())
             except (ValueError, SyntaxError, KeyError) as exc:
-                self.source.setPlainText(str(exc))
+                with QSignalBlocker(self.source):
+                    self.source.setPlainText(str(exc))
                 if isinstance(exc, StudioSyntaxError):
                     self._set_error_location(exc)
         elif widget is self.overview:
             self.overview.refresh(self.project)
+
+    def _on_form_designer_changed(self) -> None:
+        self._mark_dirty()
+
+    def _lsp_snapshot(self) -> tuple[StudioProject, str | None]:
+        self._store()
+        return self.project, (self.source.toPlainText() if self._source_edit_mode else None)
+
+    def _on_lsp_status(self, ready: bool, message: str) -> None:
+        self.lsp_status_label.setText(f"LSP: {message}" if ready else f"LSP: {message}")
+
+    def _update_cursor_indicator(self, line: int, col: int) -> None:
+        self.cursor_status_label.setText(f"Стр {line}, Кол {col}")
+
+    def _to_editor_diag(self, diag: MappedDiagnostic) -> EditorDiagnostic:
+        return EditorDiagnostic(
+            line=diag.line,
+            col=diag.col,
+            end_line=diag.end_line,
+            end_col=diag.end_col,
+            severity=diag.severity,
+            message=diag.message,
+        )
+
+    def _apply_diagnostics_to_current(self) -> None:
+        entity_name = self.current.name if self.current is not None else ""
+        self.code.set_diagnostics([
+            self._to_editor_diag(d)
+            for d in self._mapped_diagnostics
+            if d.location == "Код объекта" and d.entity_name == entity_name
+        ])
+        self.form_designer.form_code_editor.set_diagnostics([
+            self._to_editor_diag(d)
+            for d in self._mapped_diagnostics
+            if d.location == "Код формы" and d.entity_name == entity_name
+        ])
+        self.imports.set_diagnostics([
+            self._to_editor_diag(d) for d in self._mapped_diagnostics if d.location == "Код перед объектами"
+        ])
+        self.logic.set_diagnostics([
+            self._to_editor_diag(d) for d in self._mapped_diagnostics if d.location == "Код после объектов"
+        ])
+        self.source.set_diagnostics([
+            self._to_editor_diag(d) for d in self._mapped_diagnostics if d.location == "Код проекта"
+        ])
+
+    def _on_lsp_diagnostics(self, diags: list[MappedDiagnostic]) -> None:
+        self._mapped_diagnostics = diags
+        self._apply_diagnostics_to_current()
+        self.problems_list.clear()
+        for d in diags:
+            sev = {1: "Ошибка", 2: "Предупреждение", 3: "Инфо", 4: "Подсказка"}.get(d.severity, "Замечание")
+            where = f"{d.entity_name} · {d.location}" if d.entity_name else d.location
+            first_line = d.message.splitlines()[0] if d.message else ""
+            item = QListWidgetItem(f"[{sev}] {where}:{d.line + 1} — {first_line}")
+            item.setData(Qt.ItemDataRole.UserRole, d)
+            self.problems_list.addItem(item)
+        self.bottom_tabs.setTabText(1, f"Проблемы ({len(diags)})")
+
+    def _on_lsp_symbols(self, symbols: list[LspSymbol]) -> None:
+        self.symbols_tree.clear()
+
+        def _append(parent: QTreeWidgetItem | None, sym: LspSymbol) -> None:
+            kind_name = {5: "Класс", 6: "Метод", 12: "Функция", 13: "Поле", 14: "Константа"}.get(sym.kind, "")
+            detail = f"{kind_name} · {sym.detail}".strip(" ·")
+            node = QTreeWidgetItem([sym.name, detail, str(sym.line + 1)])
+            node.setData(0, Qt.ItemDataRole.UserRole, (sym.line, sym.col))
+            if parent is None:
+                self.symbols_tree.addTopLevelItem(node)
+            else:
+                parent.addChild(node)
+            for child in sym.children:
+                _append(node, child)
+
+        for root_sym in symbols:
+            _append(None, root_sym)
+        self.symbols_tree.expandToDepth(0)
+
+    def _jump_to_mapped_location(self, location: str, entity_name: str, line_0: int, col_0: int) -> None:
+        if entity_name:
+            index = next((i for i, e in enumerate(self.project.entities) if e.name == entity_name), -1)
+            if index >= 0:
+                self.entity_filter.clear()
+                self.entities.setCurrentRow(index)
+        if location == "Код объекта":
+            self.tabs.setCurrentIndex(0)
+            editor = self.code
+            page = self.tabs.currentWidget()
+            if isinstance(page, QScrollArea):
+                page.ensureWidgetVisible(editor)
+        elif location == "Код формы":
+            self.tabs.setCurrentWidget(self.form_designer)
+            self.form_designer.right_tabs.setCurrentIndex(1)
+            editor = self.form_designer.form_code_editor
+        elif location == "Код перед объектами":
+            self.tabs.setCurrentIndex(1)
+            editor = self.imports
+        elif location == "Код после объектов":
+            self.tabs.setCurrentIndex(1)
+            editor = self.logic
+        else:
+            self.tabs.setCurrentWidget(self.source)
+            if not self._source_edit_mode:
+                try:
+                    with QSignalBlocker(self.source):
+                        self.source.setPlainText(self.project.source())
+                except (ValueError, SyntaxError, KeyError):
+                    pass
+            editor = self.source
+        editor.go_to_line(line_0 + 1, col_0 + 1)
+
+    def _jump_to_problem_item(self, item: QListWidgetItem) -> None:
+        diag = item.data(Qt.ItemDataRole.UserRole)
+        if isinstance(diag, MappedDiagnostic):
+            self._jump_to_mapped_location(diag.location, diag.entity_name, diag.line, diag.col)
+
+    def _jump_to_symbol_item(self, item: QTreeWidgetItem, _col: int) -> None:
+        coords = item.data(0, Qt.ItemDataRole.UserRole)
+        if isinstance(coords, tuple) and len(coords) == 2:
+            line_0, col_0 = coords
+            if not self._source_edit_mode:
+                loc, ent, ed_l, ed_c = self._lsp_bridge.map_virtual_to_editor(line_0, col_0)
+                if loc != "Код проекта":
+                    self._jump_to_mapped_location(loc, ent, ed_l, ed_c)
+                    return
+            self._jump_to_mapped_location("Код проекта", "", line_0, col_0)
+
+    def _on_lsp_definition(self, target: object) -> None:
+        if isinstance(target, tuple) and len(target) == 4:
+            loc, ent, line_0, col_0 = target
+            self._jump_to_mapped_location(str(loc), str(ent), int(line_0), int(col_0))
+        elif isinstance(target, LspLocation):
+            self.statusBar().showMessage(f"Определение: {target.path.name}:{target.line + 1}")
+
+    def _toggle_source_edit_mode(self, enabled: bool) -> None:
+        if self._source_dirty and not enabled:
+            answer = QMessageBox.question(
+                self,
+                "Применить изменения кода?",
+                "Вы изменили app.py вручную. Применить изменения в визуальный проект Studio перед блокировкой редактирования?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
+            )
+            if answer == QMessageBox.StandardButton.Cancel:
+                with QSignalBlocker(self.source_edit_check):
+                    self.source_edit_check.setChecked(True)
+                return
+            if answer == QMessageBox.StandardButton.Yes:
+                if not self._apply_source_to_project():
+                    with QSignalBlocker(self.source_edit_check):
+                        self.source_edit_check.setChecked(True)
+                    return
+                return
+        self._source_edit_mode = enabled
+        self.source.setReadOnly(not enabled)
+        if enabled:
+            try:
+                with QSignalBlocker(self.source):
+                    self.source.setPlainText(self.project.source())
+            except (ValueError, SyntaxError, KeyError) as exc:
+                self._error(exc)
+            self._source_dirty = False
+            self.source_apply_btn.setEnabled(False)
+            self.statusBar().showMessage("Режим IDE для app.py: используйте Ctrl+Space, F12 и «Применить код в Studio».")
+        else:
+            self._source_dirty = False
+            self.source_apply_btn.setEnabled(False)
+            self._reset_source_from_project()
+        self._lsp_bridge.schedule_sync()
+
+    def _on_source_edited(self) -> None:
+        if self._loading or not self._source_edit_mode:
+            return
+        self._source_dirty = True
+        self.source_apply_btn.setEnabled(True)
+        self._lsp_bridge.schedule_sync()
+
+    def _reset_source_from_project(self) -> None:
+        try:
+            text = self.project.source()
+        except (ValueError, SyntaxError, KeyError) as exc:
+            text = str(exc)
+        with QSignalBlocker(self.source):
+            self.source.setPlainText(text)
+        self._source_dirty = False
+        self.source_apply_btn.setEnabled(False)
+        self._lsp_bridge.schedule_sync()
+
+    def _apply_source_to_project(self) -> bool:
+        code_text = self.source.toPlainText()
+        try:
+            imported, warnings = import_python_project(
+                code_text,
+                default_title=self.project.title or "Моё приложение",
+                default_app_id=self.project.app_id or "my_app",
+            )
+        except (ValueError, SyntaxError) as exc:
+            self._error(exc)
+            return False
+        imported.window_width = self.project.window_width
+        imported.window_height = self.project.window_height
+        imported.working_db = self.project.working_db
+        preferred = self.current.name if self.current is not None else ""
+        self._push_undo()
+        self.project = imported
+        self._load_project(clear_history=False, preferred_entity=preferred)
+        self.tabs.setCurrentWidget(self.source)
+        self.console.appendPlainText(
+            f"Код app.py синхронизирован со Studio (объектов: {len(imported.entities)}, отчётов: {len(imported.reports)})."
+        )
+        for warning in warnings:
+            self.console.appendPlainText(f"⚠ {warning}")
+        self.statusBar().showMessage("Код app.py применён в конструктор Studio.")
+        return True
 
     def _update_window_title(self) -> None:
         name = self.path.name if self.path is not None else self.project.title or "Новый проект"
@@ -4123,12 +4590,15 @@ class StudioWindow(QMainWindow):
     def _set_error_location(self, location: StudioSyntaxError | None) -> None:
         self._error_location = location
         self.diagnostic_button.setEnabled(location is not None)
-        for editor in (self.code, self.imports, self.logic, self.source):
+        for editor in (self.code, self.form_designer.form_code_editor, self.imports, self.logic, self.source):
             editor.set_error_line(None)
         if location is None:
             return
         line = max(1, location.lineno or 1)
-        if location.entity_name:
+        if location.filename == "Код формы":
+            if self.current is not None and self.current.name == location.entity_name:
+                self.form_designer.form_code_editor.set_error_line(line)
+        elif location.entity_name:
             if self.current is not None and self.current.name == location.entity_name:
                 self.code.set_error_line(line)
         elif location.filename == "Код перед объектами":
@@ -4143,7 +4613,14 @@ class StudioWindow(QMainWindow):
         if location is None:
             return
         if location.editor_snapshot is not None:
-            if location.entity_name:
+            if location.filename == "Код формы":
+                entity = next((item for item in self.project.entities if item.name == location.entity_name), None)
+                current_text = (
+                    self.form_designer.form_code_editor.toPlainText()
+                    if entity is self.current and entity is not None
+                    else (entity.form_code if entity is not None else None)
+                )
+            elif location.entity_name:
                 entity = next((item for item in self.project.entities if item.name == location.entity_name), None)
                 current_text = self.code.toPlainText() if entity is self.current and entity is not None else (
                     entity.code if entity is not None else None
@@ -4157,7 +4634,17 @@ class StudioWindow(QMainWindow):
                     SyntaxError("Ошибка выполнения проекта", ("app.py", generated_line, 1, None)),
                     "app.py", source=location.source,
                 )
-        if location.entity_name:
+        if location.filename == "Код формы":
+            index = next((i for i, entity in enumerate(self.project.entities)
+                          if entity.name == location.entity_name), -1)
+            if index < 0:
+                return
+            self.entity_filter.clear()
+            self.entities.setCurrentRow(index)
+            self.tabs.setCurrentWidget(self.form_designer)
+            self.form_designer.right_tabs.setCurrentIndex(1)
+            editor = self.form_designer.form_code_editor
+        elif location.entity_name:
             index = next((i for i, entity in enumerate(self.project.entities)
                           if entity.name == location.entity_name), -1)
             if index < 0:
@@ -4196,14 +4683,22 @@ class StudioWindow(QMainWindow):
         if not self._confirm_changes():
             event.ignore()
             return
+        self._lsp_bridge.stop()
         if self.process.state() != QProcess.ProcessState.NotRunning:
             self.process.kill()
             self.process.waitForFinished(1000)
         super().closeEvent(event)
 
 
-def run_studio() -> int:
+def run_studio(initial_path: str | None = None) -> int:
     app = QApplication(sys.argv[:1])
     window = StudioWindow()
+    if initial_path:
+        target = Path(initial_path)
+        if target.is_file():
+            if target.suffix == ".py":
+                window._import_python_path(target)
+            else:
+                window._open_project_path(target)
     window.show()
     return app.exec()

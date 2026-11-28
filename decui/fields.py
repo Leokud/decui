@@ -94,6 +94,7 @@ class StringField(Field[str]):
     field_type: type = str
     max_length: int | None = None
     multiline: bool = False
+    placeholder: str = ""
 
     def __init__(
         self,
@@ -101,6 +102,7 @@ class StringField(Field[str]):
         *,
         max_length: int | None = None,
         multiline: bool = False,
+        placeholder: str = "",
         required: bool = False,
         default: str | Callable[[], str] | None = None,
         read_only: bool = False,
@@ -119,6 +121,7 @@ class StringField(Field[str]):
         )
         self.max_length = max_length
         self.multiline = multiline
+        self.placeholder = placeholder
 
     def _is_empty(self, value: str | None) -> bool:
         return value is None or value == ""

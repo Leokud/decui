@@ -34,6 +34,11 @@ from decui import (
     report, Report, QueryReport, Column, register_report_rows,
     StringParam, IntegerParam, NumberParam, DecimalParam, BooleanParam, DateParam, ChoiceParam, RefParam,
 
+    # Кастомные формы и контроллеры
+    Form, EntityForm, CustomForm, form_for,
+    FormItem, FormField, FormTable, FormButton, FormLabel, FormDivider,
+    FormRelated, FormWidget, FormRow, FormColumn, FormGroup, FormTab, FormTabs,
+
     # Согласование и печатные формы
     Workflow, Transition, WorkflowEvent, PrintForm, PrintTable,
 
@@ -212,7 +217,7 @@ class Invoice(Transaction):
 
 | Тип | Назначение | Параметры |
 |---|---|---|
-| `String(name=None)` | Строка (`QLineEdit` / `QPlainTextEdit`) | `required`, `max_length`, `multiline`, `read_only`, `default`, `unique`, `indexed` |
+| `String(name=None)` | Строка (`QLineEdit` / `QPlainTextEdit`) | `required`, `max_length`, `multiline`, `placeholder`, `read_only`, `default`, `unique`, `indexed` |
 | `Integer(name=None)` | Целое число (`QSpinBox`) | `required`, `min_value`, `max_value`, `default`, `unique`, `indexed` |
 | `Decimal(name=None)` | Десятичное число (`QDoubleSpinBox`) | `precision`, `scale`, `min_value`, `max_value`, `currency`, `default` |
 | `Boolean(name=None)` | Флаг (`QCheckBox`) | `default` |
@@ -231,6 +236,7 @@ class Invoice(Transaction):
 | `__list_columns__`, `__list_order__` | Колонки и начальная сортировка списка `ListView` |
 | `__form_groups__`, `__form_tabs__`, `__form_table_tabs__` | Группы полей и вкладки карточки/табличных частей |
 | `__form_visible_when__`, `__required_when_visible__` | Условная видимость и обязательность полей формы |
+| `__form__`, `__form_class__` | Декларативная компоновка `Form(...)` и/или контроллер `EntityForm` (`@form_for`) |
 | `__sequence__` | Проверка хронологической последовательности проведения документа |
 | `__workflow__`, `__print_form__` | Маршрут согласования (`Workflow`) и печатная форма (`PrintForm`) |
 | `__owner_field__`, `__permissions__`, `__field_read_roles__`, `__field_write_roles__`, `__command_roles__` | Разграничение прав по ролям и владельцу записи |
