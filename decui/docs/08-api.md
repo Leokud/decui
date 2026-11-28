@@ -283,6 +283,7 @@ class StockReport(QueryReport):
     auto_run = True
     sortable = True
     group_by = ("warehouse",)
+    chart = {"label": "product", "value": "qty", "title": "Остатки"}
     columns = [
         Column("Склад", "warehouse", width=160),
         Column("Товар", "product", width=250),
@@ -294,7 +295,7 @@ class StockReport(QueryReport):
     min_qty = IntegerParam("Мин. остаток", default=0)
 
     def execute(self, db, date_to=None, min_qty=0, **kwargs):
-        # Возвращает список словарей со строками (для отчётов по регистрам см. register_report_rows)
+        # Возвращает список словарей со строками (для отчётов по регистрам см. register_report_rows(..., latest_only=True))
         return [...]
 ```
 

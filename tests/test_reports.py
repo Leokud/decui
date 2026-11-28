@@ -455,3 +455,71 @@ def test_report_csv_sanitizes_formula_injection_preserving_negative_numbers():
     assert lines[0] == "Текст;Сумма"
     assert lines[1] == "'=SUM(A1:A2);-12.50"
     assert lines[2] == "'+cmd|' /C calc'!A0;2.50"
+
+
+def test_register_report_rows_latest_only_returns_latest_snapshot():
+    from decui import RefDimension, history_register, set_record
+    from decui.movement import Resource
+    from decui.reports import register_report_rows
+
+    @history_register
+    class TariffHistory:
+        client = RefDimension(Client, "Клиент")
+        rate = Resource("Ставка", field_type=Decimal)
+
+    db = Database.memory()
+    c1, c2 = db.seed([Client(name="Альфа"), Client(name="Бета")])
+    set_record(db, TariffHistory, dimensions={"client": c1.id}, resources={"rate": Decimal("100")}, period=datetime.date(2026, 1, 10))
+    set_record(db, TariffHistory, dimensions={"client": c1.id}, resources={"rate": Decimal("150")}, period=datetime.date(2026, 3, 5))
+    set_record(db, TariffHistory, dimensions={"client": c2.id}, resources={"rate": Decimal("200")}, period=datetime.date(2026, 2, 1))
+    set_record(db, TariffHistory, dimensions={"client": c2.id}, resources={"rate": Decimal("240")}, period=datetime.date(2026, 2, 1))
+
+    latest = register_report_rows(
+        db, TariffHistory, ["period", "client", "rate"], order_by="client", latest_only=True,
+    )
+    assert [(r["client"], r["rate"]) for r in latest] == [
+        ("Альфа", Decimal("150")),
+        ("Бета", Decimal("240")),
+    ]
+
+    as_of_feb = register_report_rows(
+        db, TariffHistory, ["period", "client", "rate"],
+        on_date=datetime.date(2026, 2, 15), order_by="client", latest_only=True,
+    )
+    assert [(r["client"], r["rate"]) for r in as_of_feb] == [
+        ("Альфа", Decimal("100")),
+        ("Бета", Decimal("240")),
+    ]
+
+
+def test_report_view_renders_and_toggles_bar_chart():
+    from PySide6.QtWidgets import QApplication
+    from decui.ui.report_view import ReportView
+
+    class ChartedReport(Report):
+        title = "Выручка по клиентам"
+        columns = [Column("Клиент", "client"), Column("Сумма", "amount", aggregate="sum")]
+        chart = {"label": "client", "value": "amount", "title": "Выручка", "color": "#059669"}
+
+        def execute(self, db, **kwargs):
+            return [
+                {"client": "Альфа", "amount": Decimal("120")},
+                {"client": "Альфа", "amount": Decimal("30")},
+                {"client": "Бета", "amount": Decimal("80")},
+            ]
+
+    app = QApplication.instance() or QApplication([])
+    view = ReportView(ChartedReport, Database.memory())
+    view.show()
+    view._generate()
+    app.processEvents()
+    assert not view._chart_toggle.isHidden()
+    assert view._chart_toggle.isChecked()
+    assert not view._chart.isHidden()
+    assert view._chart._labels == ["Альфа", "Бета"]
+    assert view._chart._values == [150.0, 80.0]
+    assert view._chart._title == "Выручка"
+    view._chart_toggle.setChecked(False)
+    app.processEvents()
+    assert view._chart.isHidden()
+    view.close()

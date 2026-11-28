@@ -1592,3 +1592,730 @@ def test_studio_choice_filter_validation_returns_focus(monkeypatch):
     assert focused == [True]
     window.saved = repr(window.project)
     window.close()
+
+
+def test_studio_extended_field_and_entity_options_roundtrip_and_execute(tmp_path):
+    from decui.studio_project import StudioEntity, suggest_identifier
+
+    assert suggest_identifier("Цена закупки") == "tsena_zakupki"
+    assert suggest_identifier("Заказы клиентов", pascal=True) == "ZakazyKlientov"
+    assert suggest_identifier("123 номер") == "f_123_nomer"
+    assert suggest_identifier("Дата") == "data"
+    assert suggest_identifier("id") == "id_value"
+
+    project = StudioProject(
+        title="Расширенный учёт",
+        app_id="ext-studio",
+        start_target="Order",
+        window_width=1360,
+        window_height=840,
+        entities=[
+            StudioEntity("Product", "Товары", fields=[
+                StudioField("sku", "Артикул", max_length=20, required=True, unique=True),
+                StudioField("name", "Название", required=True),
+                StudioField(
+                    "price", "Цена", kind="Decimal", precision=12, scale=3,
+                    min_value="0.000", max_value="999999.999", currency="RUB", default="10.500",
+                ),
+                StudioField("tags", "Метки", kind="Choice", choices="Хит, Новинка, Акция", multi=True),
+            ]),
+            StudioEntity(
+                "Order", "Заказы", kind="Документ",
+                numbering_prefix="ORD", numbering_pattern="{prefix}-{year}-{seq:04d}",
+                check_sequence=True,
+                fields=[
+                    StudioField(
+                        "product", "Товар", kind="Ref", required=True, target="Product",
+                        representation_field="sku", auto_fill="price",
+                    ),
+                    StudioField("price", "Цена", kind="Decimal", precision=12, scale=3, currency="RUB"),
+                    StudioField("qty", "Количество", kind="Integer", min_value="1", max_value="100", default="2"),
+                    StudioField("ship_date", "Дата отгрузки", kind="Date", default="today"),
+                    StudioField("created_at", "Создано", kind="DateTime", default="now"),
+                ],
+            ),
+        ],
+    )
+    spec = tmp_path / "ext.decui.json"
+    project.write(spec)
+    restored = StudioProject.read(spec)
+    assert restored == project
+    generated = restored.source()
+    assert "max_length=20" in generated
+    assert "precision=12, scale=3" in generated
+    assert "currency='RUB'" in generated
+    assert "multi=True" in generated
+    assert "representation_field='sku'" in generated
+    assert "auto_fill='price'" in generated
+    assert "default=datetime.date.today" in generated
+    assert "default=datetime.datetime.now" in generated
+    assert "__sequence__ = True" in generated
+    assert "'pattern': '{prefix}-{year}-{seq:04d}'" in generated
+    assert "start=Order" in generated
+    assert "window_size=(1360, 840)" in generated
+
+    restored.export(tmp_path)
+    program = """
+import datetime
+from decimal import Decimal
+from PySide6.QtWidgets import QApplication
+from app import Order, Product
+from decui import Database, SequenceViolationError
+from decui.ui.form import AutoForm
+
+app = QApplication([])
+db = Database.memory()
+prod = db.save(Product(sku='SKU-01', name='Кофе', price=Decimal('125.500'), tags='Хит|Акция'), validate=True)
+assert prod.tags == 'Хит|Акция'
+
+form = AutoForm(Order, db)
+form.load_new()
+combo = form._widgets['product']
+assert combo.itemText(1) == 'SKU-01'
+combo.setCurrentIndex(1)
+assert form._widgets['price'].value() == 125.5
+
+later = db.save(Order(
+    product=prod.id, price=Decimal('125.500'), qty=2,
+    date=datetime.datetime(2026, 11, 20, 12, 0),
+), validate=True)
+assert later.number.startswith('ORD-2026-')
+db.post(later)
+
+earlier = db.save(Order(
+    product=prod.id, price=Decimal('125.500'), qty=1,
+    date=datetime.datetime(2026, 11, 10, 12, 0),
+), validate=True)
+try:
+    db.post(earlier)
+except SequenceViolationError:
+    pass
+else:
+    raise AssertionError('Expected SequenceViolationError for out-of-order posting')
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", program], cwd=tmp_path, capture_output=True, text=True, timeout=15,
+        env={**os.environ, "QT_QPA_PLATFORM": "offscreen", "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_crm_delivery_template_export_line_item_report_and_smoke_tests(tmp_path):
+    from decui.studio_project import crm_delivery_template
+
+    project = crm_delivery_template()
+    spec = tmp_path / "crm.decui.json"
+    project.write(spec)
+    restored = StudioProject.read(spec)
+    assert restored == project
+
+    bundle = tmp_path / "bundle"
+    entry = restored.export_full_project(bundle)
+    assert entry.is_file()
+    for filename in ("app.py", "test_app.py", "README.md", ".gitignore", "studio-crm-delivery.decui.json"):
+        assert (bundle / filename).is_file()
+
+    check = subprocess.run(
+        [sys.executable, "-m", "decui.cli", "check", str(entry)],
+        capture_output=True, text=True, timeout=15, check=False,
+        env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+    )
+    assert check.returncode == 0, check.stdout + check.stderr
+
+    smoke = subprocess.run(
+        [sys.executable, "-m", "pytest", "-v", "test_app.py"],
+        cwd=bundle, capture_output=True, text=True, timeout=15, check=False,
+        env={**os.environ, "QT_QPA_PLATFORM": "offscreen", "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
+    )
+    assert smoke.returncode == 0, smoke.stdout + smoke.stderr
+
+    program = """
+import datetime
+from decimal import Decimal
+from app import Customer, DeliveryOrder, SalesLinesReport, _seed_initial_data
+from decui import Database
+from decui.reports import RefParam
+
+db = Database.memory()
+assert db.initialize(_seed_initial_data)
+order = db.get(DeliveryOrder, db.list(DeliveryOrder)[0].id)
+assert order.is_posted
+assert order.total == Decimal('3850.00')
+assert SalesLinesReport._report_meta.params['selected'].from_record is True
+rows = SalesLinesReport().execute(db)
+assert len(rows) == 2
+assert sum(r['amount'] for r in rows) == Decimal('3850.00')
+today = datetime.date.today()
+assert len(SalesLinesReport().execute(db, date_from=today, date_to=today)) == 2
+tomorrow = today + datetime.timedelta(days=1)
+assert SalesLinesReport().execute(db, date_from=tomorrow, date_to=tomorrow) == []
+"""
+    verify = subprocess.run(
+        [sys.executable, "-c", program], cwd=bundle, capture_output=True, text=True, timeout=15,
+        env={**os.environ, "QT_QPA_PLATFORM": "offscreen", "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
+        check=False,
+    )
+    assert verify.returncode == 0, verify.stdout + verify.stderr
+
+
+def test_studio_tools_overview_reminders_roles_and_db_inspector(tmp_path):
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication, QComboBox, QDialogButtonBox, QLineEdit, QPushButton
+
+    from decui.studio import StudioWindow
+    from decui.studio_project import StudioEntity, StudioReminder, crm_delivery_template
+    from decui.studio_tools import DatabaseInspectorDialog, FormPreviewDialog, RolesOverviewDialog
+
+    app = QApplication.instance() or QApplication([])
+    window = StudioWindow()
+    window.project = crm_delivery_template()
+    window.project.local_accounts = True
+    window.project.entities[3].permissions = {"read": ["sales"], "create": ["sales"], "update": ["sales"], "delete": [], "post": ["sales"]}
+    window.project.reminders.append(StudioReminder("DeliveryOrder", "due_date", "posted", "number", 30))
+    window._load_project()
+
+    # Entity filter, duplicate, reorder
+    assert window.entities.count() == 4
+    window.entity_filter.setText("достав")
+    assert window.entities.count() == 2
+    window.entity_filter.clear()
+    assert window.entities.count() == 4
+    window.entities.setCurrentRow(0)
+    window._duplicate_entity()
+    assert len(window.project.entities) == 5
+    assert window.project.entities[1].name == "CustomerCopy"
+    window._remove_entity_silent = window.project.entities.pop(1)
+    window._refresh_entity_list(select_index=0)
+
+    # Duplicate field
+    window.fields.selectRow(0)
+    window._duplicate_field()
+    assert len(window.project.entities[0].fields) == 4
+    window.project.entities[0].fields.pop(1)
+    window._show_fields()
+
+    # Reminders export
+    source = window.project.source()
+    assert "app.enable_reminders([DeliveryOrder], date_field='due_date', done_field='posted', title_field='number', notify_before_minutes=30)" in source
+
+    # Overview tab & diagnostics jump
+    window.tabs.setCurrentWidget(window.overview)
+    assert "Справочников: 3" in window.overview.stats.text()
+    window.project.entities[0].fields[0].name = "123bad"
+    window.overview.refresh(window.project)
+    assert window.overview.diag_list.count() >= 1
+    window.project.entities[0].fields[0].name = "name"
+
+    # Roles overview & Form preview dialogs
+    roles_dlg = RolesOverviewDialog(window, window.project)
+    assert roles_dlg.isVisible() is False
+    roles_dlg.deleteLater()
+
+    window.entities.setCurrentRow(3)
+    preview_dlg = FormPreviewDialog(window, window.current, window._form_preview)
+    preview_dlg.deleteLater()
+
+    # Persistent working DB + Database Inspector + Smoke test runner
+    db_file = tmp_path / "work.sqlite3"
+    window.project.export(tmp_path)
+    seed_script = """
+from app import _seed_initial_data
+from decui import Database
+from decui.accounts import Account, set_current_account
+set_current_account(Account('admin', 'admin'))
+db = Database('work.sqlite3')
+db.initialize(_seed_initial_data)
+"""
+    res = subprocess.run(
+        [sys.executable, "-c", seed_script], cwd=tmp_path, capture_output=True, text=True, timeout=15,
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])}, check=False,
+    )
+    assert res.returncode == 0, res.stdout + res.stderr
+
+    inspector = DatabaseInspectorDialog(window, db_file)
+    assert inspector.tables.count() >= 4
+    assert "Таблиц:" in inspector.summary.text()
+    inspector.deleteLater()
+
+    # Run smoke tests through Studio QProcess
+    window.run_smoke_tests()
+    assert window.process.waitForFinished(20_000)
+    assert window.process.exitCode() == 0, window.console.toPlainText()
+    assert "passed" in window.console.toPlainText()
+
+    # Test Reminders dialog interactive edit
+    def save_reminders():
+        dlg = app.activeModalWidget()
+        dlg.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Save).click()
+
+    QTimer.singleShot(0, save_reminders)
+    window._edit_reminders()
+
+    # Test ChoiceFilterDialog helper button inside _field_dialog
+    window.entities.setCurrentRow(3)
+
+    def inspect_choice_filter_button():
+        dlg = app.activeModalWidget()
+        btn = next(b for b in dlg.findChildren(QPushButton) if b.text() == "Подобрать…")
+        assert btn.isVisible()
+        dlg.reject()
+
+    QTimer.singleShot(0, inspect_choice_filter_button)
+    window._field_dialog(3)
+
+    window.saved = repr(window.project)
+    window.close()
+
+
+def test_python_editor_line_numbers_indent_dedent_and_find():
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QTextCursor
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication
+
+    from decui.ui.python_editor import PythonEditor
+
+    app = QApplication.instance() or QApplication([])
+    editor = PythonEditor()
+    editor.setPlainText("alpha\nbeta\ngamma")
+    cursor = editor.textCursor()
+    cursor.movePosition(QTextCursor.MoveOperation.Start)
+    cursor.movePosition(QTextCursor.MoveOperation.Down, QTextCursor.MoveMode.KeepAnchor, 1)
+    cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock, QTextCursor.MoveMode.KeepAnchor)
+    editor.setTextCursor(cursor)
+
+    QTest.keyClick(editor, Qt.Key.Key_Tab)
+    assert editor.toPlainText() == "    alpha\n    beta\ngamma"
+    QTest.keyClick(editor, Qt.Key.Key_Backtab)
+    assert editor.toPlainText() == "alpha\nbeta\ngamma"
+
+    editor.open_find()
+    assert editor.find_text("beta")
+    assert editor.textCursor().selectedText() == "beta"
+    assert not editor.find_text("missing")
+    app.processEvents()
+
+
+def test_studio_report_advanced_dialog_and_persistent_working_db(tmp_path):
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QDialogButtonBox, QLineEdit, QPushButton
+
+    from decui.studio import StudioWindow
+    from decui.studio_project import crm_delivery_template
+    from decui.studio_tools import ReportAdvancedDialog
+
+    app = QApplication.instance() or QApplication([])
+    window = StudioWindow()
+    window.project = crm_delivery_template()
+    project_file = tmp_path / "crm.decui.json"
+    window.path = project_file
+    window.project.write(project_file)
+    window.saved = repr(window.project)
+    window._load_project()
+
+    # Edit existing report via ReportAdvancedDialog
+    def edit_report_with_advanced():
+        dlg = app.activeModalWidget()
+        adv_btn = next(b for b in dlg.findChildren(QPushButton) if "формат колонок" in b.text())
+
+        def configure_adv():
+            adv = app.activeModalWidget()
+            assert isinstance(adv, ReportAdvancedDialog)
+            adv.section.setCurrentText("Аналитика")
+            adv.auto_run.setChecked(False)
+            adv.from_record.setChecked(True)
+            adv.table.item(4, 3).setText("~")
+            adv.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Ok).click()
+
+        QTimer.singleShot(0, configure_adv)
+        adv_btn.click()
+        dlg.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Save).click()
+
+    QTimer.singleShot(0, edit_report_with_advanced)
+    window._edit_report(0)
+    rep = window.project.reports[0]
+    assert rep.section == "Аналитика"
+    assert rep.auto_run is False
+    assert rep.ref_filter_from_record is True
+    assert rep.column_options["amount"]["prefix"] == "~"
+    generated = window.project.source()
+    assert "__section__ = 'Аналитика'" in generated
+    assert "auto_run = False" in generated
+    assert "prefix='~'" in generated
+
+    # Test persistent working DB execution, migration check, backup, and cleanup
+    work_db = window._resolve_working_db()
+    assert work_db == tmp_path / "crm.sqlite3"
+    window.logic.setPlainText(
+        "def configure_app(app):\n"
+        "    print('persistent-ok', app.database._path, flush=True)\n"
+        "    raise SystemExit(0)"
+    )
+    try:
+        window.preview_persistent()
+        assert window.process.waitForFinished(15_000)
+        assert window.process.exitCode() == 0, window.console.toPlainText()
+        assert work_db.is_file()
+        assert "persistent-ok" in window.console.toPlainText()
+
+        window.logic.clear()
+        window.check_working_db_migration()
+        assert window.process.waitForFinished(15_000)
+        assert window.process.exitCode() == 0, window.console.toPlainText()
+        assert "Копия базы открыта" in window.console.toPlainText()
+
+        from contextlib import closing
+        import sqlite3
+        from decui.files import copy_sqlite
+
+        backup_copy = tmp_path / "manual-backup.sqlite3"
+        uri = work_db.resolve().as_uri() + "?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True)) as src, closing(sqlite3.connect(backup_copy)) as dst:
+            copy_sqlite(src, dst)
+        assert backup_copy.is_file()
+    finally:
+        if window.process.state() != window.process.ProcessState.NotRunning:
+            window.process.kill()
+            window.process.waitForFinished(5000)
+        window.saved = repr(window.project)
+        window.close()
+
+
+@pytest.mark.parametrize("factory_name", [
+    "goal_template",
+    "invoice_template",
+    "order_invoice_template",
+    "approval_template",
+    "crm_delivery_template",
+    "purchase_prices_template",
+])
+def test_all_studio_templates_pass_check_and_generated_smoke_tests(tmp_path, factory_name):
+    import decui.studio_project as sp
+
+    project = getattr(sp, factory_name)()
+    project.export_full_project(tmp_path)
+    check = subprocess.run(
+        [sys.executable, "-m", "decui.cli", "check", str(tmp_path / "app.py")],
+        capture_output=True, text=True, timeout=15, check=False,
+        env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+    )
+    assert check.returncode == 0, check.stdout + check.stderr
+    smoke = subprocess.run(
+        [sys.executable, "-m", "pytest", "-v", "test_app.py"],
+        cwd=tmp_path, capture_output=True, text=True, timeout=15, check=False,
+        env={**os.environ, "QT_QPA_PLATFORM": "offscreen", "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
+    )
+    assert smoke.returncode == 0, smoke.stdout + smoke.stderr
+
+
+def test_purchase_prices_calculations_validations_and_field_options(tmp_path):
+    from decimal import Decimal
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QDialogButtonBox, QLineEdit, QMessageBox
+    from decui.studio import StudioWindow
+    from decui.studio_project import StudioCalculation, StudioValidation, purchase_prices_template
+    from decui.studio_tools import CalculationsValidationsDialog
+
+    project = purchase_prices_template()
+    project.export_full_project(tmp_path / "app_dir")
+    script = (
+        "from decimal import Decimal\n"
+        "from decui import Database\n"
+        "import app\n"
+        "db = Database.memory()\n"
+        "db.initialize(app._seed_initial_data)\n"
+        "sup = db.filter(app.Supplier, name='ООО Север')[0]\n"
+        "paper = db.filter(app.Product, name='Бумага А4')[0]\n"
+        "order = app.PurchaseOrder(supplier=sup.id, Items=[{'product': paper.id, 'quantity': 3}])\n"
+        "db.save(order, validate=True)\n"
+        "assert order.Items[0]['price'] == Decimal('360.00'), order.Items[0]\n"
+        "assert order.Items[0]['amount'] == Decimal('1080.00'), order.Items[0]\n"
+        "assert order.total == Decimal('1080.00'), order.total\n"
+        "empty_order = app.PurchaseOrder(supplier=sup.id, Items=[])\n"
+        "try:\n"
+        "    db.save(empty_order, validate=True)\n"
+        "    raise AssertionError('Expected validation error')\n"
+        "except ValueError as exc:\n"
+        "    assert 'позицию' in str(exc)\n"
+        "dup_order = app.PurchaseOrder(supplier=sup.id, Items=[{'product': paper.id, 'quantity': 1}, {'product': paper.id, 'quantity': 2}])\n"
+        "try:\n"
+        "    db.save(dup_order, validate=True)\n"
+        "    raise AssertionError('Expected duplicate error')\n"
+        "except ValueError as exc:\n"
+        "    assert 'дважды' in str(exc)\n"
+        "prices = app.CurrentSupplierPrices().execute(db)\n"
+        "assert len(prices) == 2\n"
+        "purchases = app.PurchasesBySupplier().execute(db)\n"
+        "assert len(purchases) == 2\n"
+    )
+    run = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=tmp_path / "app_dir",
+        capture_output=True, text=True, timeout=15, check=False,
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+
+    app = QApplication.instance() or QApplication([])
+    window = StudioWindow()
+    window.project = project
+    window._load_project()
+    # Select PurchaseOrder
+    window.entities.setCurrentRow(3)
+    assert "Расчёты и проверки (5)" in window.rules_button.text()
+
+    def edit_rules_dialog():
+        dlg = app.activeModalWidget()
+        assert isinstance(dlg, CalculationsValidationsDialog)
+        dlg._calculations.append(StudioCalculation("total", "header_formula", left="total", operator="+", right="0"))
+        dlg._validations.append(StudioValidation("compare", "total", operator=">=", other="0", message="Сумма >= 0"))
+        dlg.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Save).click()
+
+    QTimer.singleShot(0, edit_rules_dialog)
+    window._edit_rules()
+    assert len(window.current.calculations) == 4
+    assert len(window.current.validations) == 3
+
+    # Test field visible=False and Time="now" in _field_dialog
+    window.entities.setCurrentRow(0)
+    window._add_field() if False else None
+    window.current.fields.append(StudioField("hidden_time", "Время", kind="Time", default="now", visible=False))
+    window._show_fields()
+    assert "скрытое" in window.fields.item(window.fields.rowCount() - 1, 4).text()
+
+    # Check source compiles with extra header_formula, compare, Time=now, and visible=False
+    src = window.project.source()
+    assert "default=datetime.time(12, 0)" not in src
+    assert "hidden_time: Time = Time('Время'" in src
+    assert "visible=False" in src
+    assert "datetime.datetime.now().time().replace(second=0, microsecond=0)" in src
+    window.saved = repr(window.project)
+    window.close()
+
+
+def test_studio_report_chart_row_styles_latest_only_and_live_preview(tmp_path):
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication, QDialogButtonBox, QPushButton
+    from decui.studio import StudioWindow
+    from decui.studio_project import purchase_prices_template
+    from decui.studio_tools import ReportAdvancedDialog, ReportPreviewDialog
+
+    app = QApplication.instance() or QApplication([])
+    window = StudioWindow()
+    window.project = purchase_prices_template()
+    window._load_project()
+
+    # Edit PurchaseOrder report and configure chart + sortable=False + row style + filters via ReportAdvancedDialog
+    def edit_rep():
+        dlg = app.activeModalWidget()
+        adv_btn = next(b for b in dlg.findChildren(QPushButton) if "формат колонок" in b.text())
+
+        def cfg_adv():
+            adv = app.activeModalWidget()
+            assert isinstance(adv, ReportAdvancedDialog)
+            adv.sortable.setChecked(False)
+            adv.chart_label.setCurrentIndex(adv.chart_label.findData("supplier"))
+            adv.chart_value.setCurrentIndex(adv.chart_value.findData("amount"))
+            adv.chart_title.setText("Итоги закупок")
+            adv.chart_color.setCurrentText("#059669")
+            adv.text_filter_field.setCurrentIndex(adv.text_filter_field.findData("number"))
+            adv._add_style_row({
+                "field": "supplier",
+                "value": "ООО Север",
+                "style": "completed",
+                "color": "#dcfce7",
+                "bold": "1",
+            })
+            adv.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Ok).click()
+
+        QTimer.singleShot(0, cfg_adv)
+        adv_btn.click()
+        dlg.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Save).click()
+
+    QTimer.singleShot(0, edit_rep)
+    window._edit_report(1)
+    rep = window.project.reports[1]
+    assert rep.sortable is False
+    assert rep.chart_title == "Итоги закупок"
+    assert rep.chart_color == "#059669"
+    assert rep.text_filter_field == "number"
+    assert rep.row_styles and rep.row_styles[0]["style"] == "completed"
+
+    code = window.project.source()
+    assert "sortable = False" in code
+    assert "chart = {'label': 'supplier'" in code
+    assert "latest_only=True" in code
+    assert "row['_style'] = 'completed'" in code
+
+    # Live isolated ReportPreviewDialog on in-memory seed data
+    preview = ReportPreviewDialog(window, window.project, "PurchasesBySupplier", None)
+    assert preview.table.rowCount() >= 2
+    assert not preview.chart.isHidden()
+    assert preview.chart._title == "Итоги закупок"
+    preview.close()
+    preview.deleteLater()
+
+    window.saved = repr(window.project)
+    window.close()
+
+
+def test_studio_import_python_and_capture_seeds_roundtrip(tmp_path):
+    from PySide6.QtWidgets import QApplication
+    from decui.studio import StudioWindow
+    from decui.studio_import import import_python_project
+    from decui.studio_project import purchase_prices_template
+
+    original = purchase_prices_template()
+    exported_dir = tmp_path / "exported"
+    exported_app = original.export(exported_dir)
+    imported, warnings = import_python_project(
+        exported_app.read_text(encoding="utf-8"),
+        default_title="Imported",
+        default_app_id="imported_app",
+    )
+    assert {e.name for e in imported.entities} == {e.name for e in original.entities}
+    assert {r.name for r in imported.registers} == {r.name for r in original.registers}
+    assert {rp.name for rp in imported.reports} == {rp.name for rp in original.reports}
+
+    # Check imported project also passes decui check
+    reexport_dir = tmp_path / "reexport"
+    reexported = imported.export(reexport_dir)
+    chk = subprocess.run(
+        [sys.executable, "-m", "decui.cli", "check", str(reexported)],
+        capture_output=True, text=True, timeout=15, check=False,
+        env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+    )
+    assert chk.returncode == 0, chk.stdout + chk.stderr
+
+    # Create a populated SQLite DB using exported app and capture seeds via StudioWindow._capture_seeds_from_path
+    db_file = tmp_path / "live_data.sqlite3"
+    seed_script = (
+        "from decui import Database\n"
+        "import app\n"
+        f"db = Database({str(db_file)!r})\n"
+        "db.initialize(app._seed_initial_data)\n"
+    )
+    seed_res = subprocess.run(
+        [sys.executable, "-c", seed_script],
+        cwd=exported_dir,
+        capture_output=True, text=True, timeout=15, check=False,
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
+    )
+    assert seed_res.returncode == 0, seed_res.stdout + seed_res.stderr
+
+    app = QApplication.instance() or QApplication([])
+    window = StudioWindow()
+    assert window._import_python_path(exported_app)
+    initial_count = len(window.project.initial_data)
+    assert window._capture_seeds_from_path(db_file)
+    assert len(window.project.initial_data) == initial_count + 6
+    assert any(s.tables.get("Items") for s in window.project.initial_data if s.entity == "PurchaseOrder")
+    window.saved = repr(window.project)
+    window.close()
+
+
+def test_python_editor_replace_comment_goto_error_and_completions():
+    from PySide6.QtWidgets import QApplication
+    from decui.ui.python_editor import PythonEditor
+
+    app = QApplication.instance() or QApplication([])
+    editor = PythonEditor()
+    editor.setPlainText("foo = 1\nbar = foo + 2\nbaz = foo * 3")
+
+    editor.open_find(replace=True)
+    assert editor.replace_all("foo", "qux") == 3
+    assert "qux = 1\nbar = qux + 2\nbaz = qux * 3" == editor.toPlainText()
+
+    cursor = editor.textCursor()
+    cursor.setPosition(0)
+    editor.setTextCursor(cursor)
+    editor.toggle_comment()
+    assert editor.toPlainText().startswith("# qux = 1")
+    editor.toggle_comment()
+    assert editor.toPlainText().startswith("qux = 1")
+
+    editor.set_error_line(2)
+    assert editor._error_line == 2
+    assert len(editor.extraSelections()) == 2
+
+    editor.set_completion_words(["SupplierPrices", "PurchaseOrder"])
+    cursor = editor.textCursor()
+    cursor.movePosition(cursor.MoveOperation.End)
+    cursor.insertText("\nSup")
+    editor.setTextCursor(cursor)
+    editor.trigger_completion(force=True)
+    assert "SupplierPrices" in editor._completion_model.stringList()
+    editor._insert_completion("SupplierPrices")
+    assert editor.toPlainText().endswith("SupplierPrices")
+
+
+def test_studio_overview_diagram_sql_inspector_undo_redo_and_cleanup(tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QApplication, QMessageBox
+    from decui.studio import StudioWindow
+    from decui.studio_project import purchase_prices_template
+    from decui.studio_tools import DatabaseInspectorDialog, FormPreviewDialog
+
+    app = QApplication.instance() or QApplication([])
+    window = StudioWindow()
+    window.project = purchase_prices_template()
+    window._load_project()
+    window.tabs.setCurrentWidget(window.overview)
+    app.processEvents()
+    window.overview.diagram.resize(800, 500)
+    assert len(window.overview.diagram._boxes) >= len(window.project.entities)
+
+    # Test auto-naming when adding entity
+    window._add_entity()
+    window.label.setText("Договор поставки")
+    assert window.name.text() == "DogovorPostavki"
+    assert "*" in window.windowTitle()
+
+    # Test preset + undo/redo
+    before_preset_count = len(window.project.entities)
+    window._add_preset_entity("task")
+    assert len(window.project.entities) == before_preset_count + 1
+    assert window._undo_action.isEnabled()
+    window.undo()
+    assert len(window.project.entities) == before_preset_count
+    window.redo()
+    assert len(window.project.entities) == before_preset_count + 1
+
+    # Test safe deletion removes dependent references & reports
+    monkeypatch.setattr(QMessageBox, "question", lambda *_a, **_kw: QMessageBox.StandardButton.Yes)
+    supplier_idx = next(i for i, e in enumerate(window.project.entities) if e.name == "Supplier")
+    window.entities.setCurrentRow(supplier_idx)
+    window._remove_entity()
+    assert all(e.name != "Supplier" for e in window.project.entities)
+    assert all(f.target != "Supplier" for e in window.project.entities for f in e.fields)
+    window.undo()
+    assert any(e.name == "Supplier" for e in window.project.entities)
+
+    # Test FormPreviewDialog initial_data Ref loading
+    po = next(e for e in window.project.entities if e.name == "PurchaseOrder")
+    preview = FormPreviewDialog(window, po, window._form_preview, project=window.project)
+    preview.close()
+    preview.deleteLater()
+
+    # Test DatabaseInspectorDialog read-only SQL query and rejection of writes
+    db_path = tmp_path / "inspect.sqlite3"
+    exported_dir = tmp_path / "exp"
+    window.project.export(exported_dir)
+    subprocess.run(
+        [sys.executable, "-c", f"from decui import Database; import app; db = Database({str(db_path)!r}); db.initialize(app._seed_initial_data)"],
+        cwd=exported_dir, capture_output=True, text=True, timeout=15, check=True,
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
+    )
+    inspector = DatabaseInspectorDialog(window, db_path)
+    inspector.sql_edit.setPlainText("SELECT name FROM sqlite_master WHERE type='table'")
+    inspector._run_readonly_sql()
+    assert inspector.sql_grid.rowCount() >= 2
+    inspector.sql_edit.setPlainText("DROP TABLE product")
+    inspector._run_readonly_sql()
+    assert "Разрешены только запросы чтения" in inspector.sql_status.text()
+    inspector.close()
+    inspector.deleteLater()
+
+    window.saved = repr(window.project)
+    window.close()
+

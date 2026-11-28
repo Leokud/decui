@@ -514,7 +514,15 @@ def cmd_build(args: argparse.Namespace) -> int:
     return subprocess.call(build_cmd)
 
 
+def _configure_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def main() -> None:
+    _configure_stdio()
     parser = argparse.ArgumentParser(
         prog="decui",
         description="Создание, запуск и проверка приложений DECUI",

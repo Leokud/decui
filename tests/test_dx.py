@@ -312,3 +312,36 @@ def test_cli_check_and_build_russian_messages(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(cli.subprocess, "call", lambda _cmd: 0)
     assert cli.cmd_build(argparse.Namespace(file=str(app_py))) == 0
     assert "Сборка исполняемого файла для" in capsys.readouterr().out
+
+
+def test_cli_handles_non_utf8_stdio_encoding(tmp_path):
+    app_py = tmp_path / "app.py"
+    app_py.write_text(
+        "from decui import MasterData, String, master_data\n\n"
+        "@master_data\n"
+        "class Product(MasterData):\n"
+        "    name = String('Наименование')\n",
+        encoding="utf-8",
+    )
+    env = {**os.environ, "PYTHONIOENCODING": "cp1252", "PYTHONUTF8": "0"}
+    result = subprocess.run(
+        [sys.executable, "-m", "decui.cli", "check", str(app_py)],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        encoding="utf-8",
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Проверка пройдена (app.py):" in result.stdout
+
+    missing_res = subprocess.run(
+        [sys.executable, "-m", "decui.cli", "check", str(tmp_path / "missing.py")],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        encoding="utf-8",
+        timeout=30,
+    )
+    assert missing_res.returncode == 1
+    assert "не найден" in missing_res.stderr

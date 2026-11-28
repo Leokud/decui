@@ -62,6 +62,7 @@ from decui.reports import (
 from decui.reports import (
     Column as ColumnMeta,
 )
+from decui.ui.chart import BarChart
 from decui.ui.editors import populate_ref_editor, show_ui_error
 
 if TYPE_CHECKING:
@@ -240,6 +241,14 @@ class ReportView(QWidget):
         self._groups_button.setEnabled(bool(self._report_class.columns))
         self._groups_button.clicked.connect(self._edit_groups)
         btn_layout.addWidget(self._groups_button)
+        chart_cfg = getattr(self._report_class, "chart", None)
+        has_chart = isinstance(chart_cfg, dict) and bool(chart_cfg.get("label")) and bool(chart_cfg.get("value"))
+        self._chart_toggle = QPushButton("Диаграмма")
+        self._chart_toggle.setCheckable(True)
+        self._chart_toggle.setChecked(has_chart)
+        self._chart_toggle.setVisible(has_chart)
+        self._chart_toggle.toggled.connect(self._toggle_chart_visibility)
+        btn_layout.addWidget(self._chart_toggle)
         btn_layout.addStretch()
 
         self._export_btn = QPushButton("Экспорт CSV")
@@ -283,6 +292,16 @@ class ReportView(QWidget):
         self._table.doubleClicked.connect(self._on_double_click)
         self._table.setVisible(False)
         layout.addWidget(self._table, stretch=1)
+
+        chart_cfg = getattr(self._report_class, "chart", None)
+        self._chart = BarChart(
+            title=(chart_cfg.get("title", "") if isinstance(chart_cfg, dict) else ""),
+            bar_color=(chart_cfg.get("color", "#4A7BFF") if isinstance(chart_cfg, dict) and chart_cfg.get("color") else "#4A7BFF"),
+        )
+        self._chart.setMinimumHeight(200)
+        self._chart.setMaximumHeight(270)
+        self._chart.setVisible(False)
+        layout.addWidget(self._chart)
 
         hdr = self._table.horizontalHeader()
         hdr.setStretchLastSection(True)
@@ -772,6 +791,8 @@ class ReportView(QWidget):
             self._last_rows = []
             self._table.setModel(None)
             self._table.setVisible(False)
+            self._chart.set_data([], [])
+            self._chart.setVisible(False)
             self._summary_label.setVisible(False)
             self._no_data_label.setVisible(True)
             self._no_data_label.setText(
@@ -863,11 +884,47 @@ class ReportView(QWidget):
                     self._table.setColumnWidth(i, c.width)
 
         self._last_rows = list(rows)
+        self._update_chart(rows)
         self._summary_label.setText(" | ".join(summary_parts))
         self._summary_label.setVisible(True)
         self._no_data_label.setVisible(False)
         self._table.setVisible(True)
         self._update_result_status()
+
+    def _toggle_chart_visibility(self, checked: bool) -> None:
+        self._chart.setVisible(checked and bool(self._chart._values))
+
+    def _update_chart(self, rows: list[dict[str, Any]]) -> None:
+        chart_cfg = getattr(self._report_class, "chart", None)
+        if not isinstance(chart_cfg, dict):
+            self._chart.set_data([], [])
+            self._chart.setVisible(False)
+            return
+        label_col = chart_cfg.get("label", "")
+        value_col = chart_cfg.get("value", "")
+        agg = chart_cfg.get("aggregate", "sum") or "sum"
+        if not label_col or not value_col:
+            self._chart.set_data([], [])
+            self._chart.setVisible(False)
+            return
+        buckets: dict[Any, tuple[str, list[Any]]] = {}
+        for row in rows:
+            raw_label = row.get(label_col)
+            display = "—" if raw_label in (None, "") else str(raw_label)
+            key = (row.get("_group_keys", {}).get(label_col, display), display)
+            buckets.setdefault(key, (display, []))[1].append(row.get(value_col))
+        labels: list[str] = []
+        values: list[float] = []
+        for display, bucket_vals in buckets.values():
+            computed = calc_aggregate(bucket_vals, agg)
+            if computed:
+                try:
+                    values.append(float(computed))
+                    labels.append(display)
+                except ValueError:
+                    pass
+        self._chart.set_data(labels, values)
+        self._chart.setVisible(bool(labels) and self._chart_toggle.isChecked())
 
     def _remember_sort(self, index: int, order: Qt.SortOrder) -> None:
         if self._table.isSortingEnabled():

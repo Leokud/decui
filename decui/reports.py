@@ -144,6 +144,7 @@ def register_report_rows(
     ref_filter: str = "",
     order_by: str = "",
     groups: tuple[str, ...] = (),
+    latest_only: bool = False,
 ) -> list[dict[str, Any]]:
     """Read balances or information records and resolve displayed references."""
     from .movement import RefDimension, get_balance, get_records
@@ -155,6 +156,12 @@ def register_report_rows(
         rows = get_balance(db, register, on_date=on_date, group_by=group_by, **filters)
     else:
         rows = get_records(db, register, on_date=on_date, **filters)
+        if latest_only:
+            dim_names = tuple(meta.dimensions)
+            latest_by_dims: dict[tuple[Any, ...], dict[str, Any]] = {}
+            for row in rows:
+                latest_by_dims[tuple(row.get(dim) for dim in dim_names)] = row
+            rows = list(latest_by_dims.values())
 
     for name in columns:
         dimension = meta.dimensions.get(name)
@@ -346,6 +353,7 @@ class Report:
     auto_run: ClassVar[bool] = False
     sortable: ClassVar[bool] = True
     group_by: ClassVar[tuple[str, ...]] = ()
+    chart: ClassVar[dict[str, str] | None] = None
     _interactive_grouping: bool = False
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
